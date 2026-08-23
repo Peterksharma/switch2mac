@@ -738,6 +738,8 @@ struct ConfigurationSection: View {
     @AppStorage(AppConfig.notifyConnectionsKey) private var notifyConnections = true
     @AppStorage(AppConfig.lowBatteryThresholdKey) private var lowBattery = 0.15
     @AppStorage(AppConfig.idleSleepMinutesKey) private var idleMinutes = 15.0
+    @AppStorage(AppConfig.networkGamepadEnabledKey) private var networkGamepadEnabled = false
+    @AppStorage(AppConfig.networkGamepadBasePortKey) private var networkGamepadBasePort = 55400
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -763,6 +765,23 @@ struct ConfigurationSection: View {
                     .foregroundStyle(.secondary)
             }
             Text("A sleeping controller reconnects the moment any button is pressed.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Divider()
+            Toggle("Network gamepad output (RetroArch)", isOn: $networkGamepadEnabled)
+            HStack(spacing: 12) {
+                Text("Base port")
+                TextField("55400", value: $networkGamepadBasePort, format: .number.grouping(.never))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 72)
+                    .disabled(!networkGamepadEnabled)
+                Text("players 1–4 on \(String(networkGamepadBasePort))–\(String(networkGamepadBasePort + 3))")
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.leading, 18)
+            Text("Sends each player's state over local UDP to programs that accept a "
+                 + "network gamepad — no SDL library needed; no rumble. "
+                 + "RetroArch: Settings → Network → Network Gamepad, same base port.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Divider()

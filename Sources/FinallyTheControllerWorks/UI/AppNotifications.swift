@@ -14,6 +14,8 @@ enum AppConfig {
     static let notifyConnectionsKey = "notifyConnections"      // Bool, default true
     static let lowBatteryThresholdKey = "lowBatteryThreshold"  // Double 0-1, default 0.15
     static let idleSleepMinutesKey = "idleSleepMinutes"        // Double, 0 = never, default 15
+    static let networkGamepadEnabledKey = "networkGamepadEnabled"        // Bool, default false
+    static let networkGamepadBasePortKey = "networkGamepadBasePort"      // Int, default 55400
 
     static var notifyEnabled: Bool {
         UserDefaults.standard.object(forKey: notifyEnabledKey) as? Bool ?? true
@@ -23,6 +25,15 @@ enum AppConfig {
     }
     static var lowBatteryThreshold: Double {
         UserDefaults.standard.object(forKey: lowBatteryThresholdKey) as? Double ?? 0.15
+    }
+    static var networkGamepadEnabled: Bool {
+        UserDefaults.standard.object(forKey: networkGamepadEnabledKey) as? Bool ?? false
+    }
+    /// Network gamepad base UDP port; player N uses base + N - 1
+    /// (RetroArch's `network_remote_base_port`).
+    static var networkGamepadBasePort: Int {
+        let port = UserDefaults.standard.object(forKey: networkGamepadBasePortKey) as? Int ?? 55400
+        return min(max(port, 1024), 65535 - BridgeEngine.maxPlayers)
     }
     static var idleSleepMinutes: Double {
         UserDefaults.standard.object(forKey: idleSleepMinutesKey) as? Double ?? 15

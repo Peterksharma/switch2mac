@@ -57,6 +57,34 @@ Gopher64 is SDL-based, so it works through the bridge today:
 The same recipe works for any SDL3-based emulator or game — see
 [`sdl/README.md`](sdl/README.md) for the general one-line launch method.
 
+## Using it with RetroArch
+
+RetroArch on macOS doesn't use SDL for input, so the bridge above can't
+reach it. Instead the app can feed RetroArch's built-in **Network
+Gamepad** directly — no extra library, nothing to patch:
+
+1. In RetroArch: **Settings → Network → Network Gamepad** → on. Leave
+   the base port at 55400, and turn on **Network Gamepad User 1** (and
+   2–4 for more players). Restart RetroArch.
+2. In the menu-bar app's dashboard, open **Configuration** and turn on
+   **Network gamepad output (RetroArch)**.
+3. Load a game. Your controller drives the RetroPad for player 1
+   directly (no "bind all" step needed) — sticks, D-pad, A/B/X/Y,
+   L/R/ZL/ZR, stick clicks, +/−.
+
+Caveats: RetroArch's network protocol is one-way (no rumble), and Home,
+Capture, C, GL and GR have no RetroPad equivalent (use the app's
+button remapper for those). RetroArch listens on all interfaces with no
+authentication, so only enable its network gamepad on a network you
+trust.
+
+Looking ahead: RetroArch gained an SDL3 joypad driver upstream in
+mid-2026, but the official macOS builds aren't compiled with it yet. If
+that changes, the SDL bridge above will work with RetroArch too — with
+rumble — by launching it with the patched `libSDL3` like any other SDL3
+app, and the network gamepad becomes the fallback rather than the only
+route.
+
 ## Features
 
 **Working now, in the beta UI**
@@ -78,6 +106,7 @@ The same recipe works for any SDL3-based emulator or game — see
 - Button remapping per controller
 - Joy-Con 2 **mouse mode** (the optical sensor, used flat on the desk)
 - UDP/SDL bridge for games and emulators, with game rumble passthrough
+- RetroArch network-gamepad output (no SDL needed; off by default)
 - Signed auto-updates, first-run tour, settings import/export, live
   log with BLE gap diagnostics, launch-at-login
 
@@ -117,12 +146,13 @@ Controller ──BLE──> BridgeEngine ──> ControllerSession (per slot)
                        ▼
               ControllerOutputSink protocol
                ├── VirtualHIDSink (CoreHID; entitlement-gated)
-               └── UDPHub        (SDL-compat, ports 24800-24803)
+               ├── UDPHub        (SDL-compat, ports 24800-24803)
+               └── NetworkGamepadSink (network gamepad / RetroArch, 55400-55403)
 ```
 
 - `Protocol/Switch2Protocol.swift` — the wire protocol, transport-free.
 - `Bluetooth/` — CoreBluetooth engine + per-controller session state machine.
-- `Output/` — the two sinks.
+- `Output/` — the sinks.
 - `UI/` — SwiftUI dashboard (status cards + live log) and menu bar.
 
 ## Support
