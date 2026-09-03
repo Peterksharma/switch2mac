@@ -31,13 +31,8 @@ Controller ──BLE──> menu-bar app ──ws://127.0.0.1:24810──> exten
    **Developer mode**, click **Load unpacked**, and choose this
    `browser/extension` folder.
 3. Open <https://hardwaretester.com/gamepad>, press a button on the
-   controller: it appears as *Xbox Wireless Controller (STANDARD
-   GAMEPAD …)* with the standard layout. (The pad introduces itself as
-   an Xbox controller because sites such as Xbox Cloud Gaming choose
-   glyphs and vendor-specific handling from that string. To keep the real
-   name on one site, open that site's DevTools console and run
-   `localStorage.ftcwPersona = 'nintendo'`, then reload; `'xbox'` or
-   removing the key switches back.)
+   controller: it appears as *Pro Controller 2 (STANDARD GAMEPAD …)*
+   with the standard layout.
 4. Open <https://www.xbox.com/play> and play. Rumble works.
 
 Safari is not supported: it blocks `ws://` connections from `https://`
@@ -100,6 +95,18 @@ to `true` at the top of `shim.js` and reload the extension.
 
 Button remapping in the app's dashboard applies before the bridge, so
 custom layouts carry over.
+
+## Identity (persona)
+
+Sites read the vendor id out of `gamepad.id` and choose glyphs and
+vendor-specific handling from it. By default the pad keeps its real
+identity (*Pro Controller 2 … Vendor: 057e*). `PERSONA_DEFAULT` in
+`shim.js` switches every site to an *Xbox Wireless Controller* identity,
+and a single site can be overridden from its DevTools console with
+`localStorage.ftcwPersona = 'xbox'` (or `'nintendo'`; remove the key to
+reset), then a reload. GeForce NOW sends an "is Xbox" flag to its servers
+with every input packet, so try the Xbox identity there if sticks feel
+off.
 
 ## Adding a site
 

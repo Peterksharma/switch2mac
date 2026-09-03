@@ -13,17 +13,19 @@
   if (navigator.__ftcwBridge) return;
 
   const NINTENDO_LABELS = false;
-  // How the pad introduces itself. Xbox Cloud Gaming classifies controllers
-  // by the vendor id in this string (045e Xbox, 057e Nintendo, …) and picks
-  // glyphs and per-vendor handling from that; since the layout is
-  // positional (Xbox-style) by default, present as an Xbox pad. Set to
-  // 'nintendo' to keep the real identity.
+  // How the pad introduces itself. Sites classify controllers by the vendor
+  // id in this string (045e Xbox, 057e Nintendo, …) and pick glyphs and
+  // per-vendor handling from that. 'nintendo' keeps the real identity;
+  // 'xbox' presents as an Xbox Wireless Controller, which some streaming
+  // services treat on a better-trodden path (GeForce NOW sends an
+  // "is Xbox" flag to its servers with every input packet).
   // Per-site override without touching files: in the site's DevTools console
-  //   localStorage.ftcwPersona = 'nintendo'   (or 'xbox'; remove to reset)
+  //   localStorage.ftcwPersona = 'xbox'   (or 'nintendo'; remove to reset)
   // then reload the page.
+  const PERSONA_DEFAULT = 'nintendo';
   const PERSONA = (() => {
     try { const v = localStorage.getItem('ftcwPersona'); if (v === 'xbox' || v === 'nintendo') return v; } catch {}
-    return 'xbox';
+    return PERSONA_DEFAULT;
   })();
   // Expose C / GL / GR as buttons 18-20. Off by default: real Xbox pads stop
   // at 17 (Share), and some sites misbehave with extra indices.
