@@ -13,6 +13,12 @@
   if (navigator.__ftcwBridge) return;
 
   const NINTENDO_LABELS = false;
+  // How the pad introduces itself. Xbox Cloud Gaming classifies controllers
+  // by the vendor id in this string (045e Xbox, 057e Nintendo, …) and picks
+  // glyphs and per-vendor handling from that; since the layout is
+  // positional (Xbox-style) by default, present as an Xbox pad. Set to
+  // 'nintendo' to keep the real identity.
+  const PERSONA = 'xbox';
   // Expose C / GL / GR as buttons 18-20. Off by default: real Xbox pads stop
   // at 17 (Share), and some sites misbehave with extra indices.
   const EXTRA_BUTTONS = false;
@@ -88,7 +94,9 @@
 
   const clamp01 = (v) => Math.min(1, Math.max(0, Number(v) || 0));
 
-  const padId = (model, name) => `${name || model} (STANDARD GAMEPAD Vendor: 057e Product: 2069)`;
+  const padId = (model, name) => PERSONA === 'xbox'
+    ? 'Xbox Wireless Controller (STANDARD GAMEPAD Vendor: 045e Product: 0b13)'
+    : `${name || model} (STANDARD GAMEPAD Vendor: 057e Product: 2069)`;
 
   function makePad(slot, model, name) {
     const buttons = [];

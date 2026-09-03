@@ -31,8 +31,11 @@ Controller ──BLE──> menu-bar app ──ws://127.0.0.1:24810──> exten
    **Developer mode**, click **Load unpacked**, and choose this
    `browser/extension` folder.
 3. Open <https://hardwaretester.com/gamepad>, press a button on the
-   controller: it appears as *Pro Controller 2 (STANDARD GAMEPAD …)*
-   with the standard layout.
+   controller: it appears as *Xbox Wireless Controller (STANDARD
+   GAMEPAD …)* with the standard layout. (The pad introduces itself as
+   an Xbox controller because sites such as Xbox Cloud Gaming choose
+   glyphs and vendor-specific handling from that string; set `PERSONA`
+   in `shim.js` to `'nintendo'` to keep the real name.)
 4. Open <https://www.xbox.com/play> and play. Rumble works.
 
 Safari is not supported: it blocks `ws://` connections from `https://`
