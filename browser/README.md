@@ -34,8 +34,10 @@ Controller ──BLE──> menu-bar app ──ws://127.0.0.1:24810──> exten
    controller: it appears as *Xbox Wireless Controller (STANDARD
    GAMEPAD …)* with the standard layout. (The pad introduces itself as
    an Xbox controller because sites such as Xbox Cloud Gaming choose
-   glyphs and vendor-specific handling from that string; set `PERSONA`
-   in `shim.js` to `'nintendo'` to keep the real name.)
+   glyphs and vendor-specific handling from that string. To keep the real
+   name on one site, open that site's DevTools console and run
+   `localStorage.ftcwPersona = 'nintendo'`, then reload; `'xbox'` or
+   removing the key switches back.)
 4. Open <https://www.xbox.com/play> and play. Rumble works.
 
 Safari is not supported: it blocks `ws://` connections from `https://`

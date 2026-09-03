@@ -18,7 +18,13 @@
   // glyphs and per-vendor handling from that; since the layout is
   // positional (Xbox-style) by default, present as an Xbox pad. Set to
   // 'nintendo' to keep the real identity.
-  const PERSONA = 'xbox';
+  // Per-site override without touching files: in the site's DevTools console
+  //   localStorage.ftcwPersona = 'nintendo'   (or 'xbox'; remove to reset)
+  // then reload the page.
+  const PERSONA = (() => {
+    try { const v = localStorage.getItem('ftcwPersona'); if (v === 'xbox' || v === 'nintendo') return v; } catch {}
+    return 'xbox';
+  })();
   // Expose C / GL / GR as buttons 18-20. Off by default: real Xbox pads stop
   // at 17 (Share), and some sites misbehave with extra indices.
   const EXTRA_BUTTONS = false;
@@ -266,6 +272,6 @@
   };
 
   Object.defineProperty(navigator, '__ftcwBridge', {
-    value: { get pads() { return [...pads.values()]; }, get up() { return bridgeUp; } },
+    value: { get pads() { return [...pads.values()]; }, get up() { return bridgeUp; }, persona: PERSONA },
   });
 })();
