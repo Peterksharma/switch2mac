@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "Finally the Controller Works \u2014 Browser Bridge",
+  "version": "0.1.0",
+  "description": "Lets web games (Xbox Cloud Gaming, GeForce NOW, Luna, gamepad testers) see the Switch 2 controllers connected through the Finally the Controller Works menu-bar app.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.xbox.com/*",
+        "https://play.geforcenow.com/*",
+        "https://luna.amazon.com/*",
+        "https://luna.amazon.co.uk/*",
+        "https://luna.amazon.de/*",
+        "https://hardwaretester.com/*",
+        "https://gamepad-tester.com/*",
+        "https://greggman.github.io/html5-gamepad-test/*"
+      ],
+      "js": [
+        "shim.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "https://www.xbox.com/*",
+        "https://play.geforcenow.com/*",
+        "https://luna.amazon.com/*",
+        "https://luna.amazon.co.uk/*",
+        "https://luna.amazon.de/*",
+        "https://hardwaretester.com/*",
+        "https://gamepad-tester.com/*",
+        "https://greggman.github.io/html5-gamepad-test/*"
+      ],
+      "js": [
+        "bridge.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
