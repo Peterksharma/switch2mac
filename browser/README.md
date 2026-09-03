@@ -91,7 +91,7 @@ to `true` at the top of `shim.js` and reload the extension.
 | 12–15 | D-pad | D-pad |
 | 16 | Xbox | Home |
 | 17 | Share | Capture |
-| 18 / 19 / 20 | — | C / GL / GR |
+| 18 / 19 / 20 | — | C / GL / GR (only with `EXTRA_BUTTONS = true` in `shim.js`) |
 
 Button remapping in the app's dashboard applies before the bridge, so
 custom layouts carry over.

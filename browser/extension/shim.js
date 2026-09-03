@@ -13,6 +13,9 @@
   if (navigator.__ftcwBridge) return;
 
   const NINTENDO_LABELS = false;
+  // Expose C / GL / GR as buttons 18-20. Off by default: real Xbox pads stop
+  // at 17 (Share), and some sites misbehave with extra indices.
+  const EXTRA_BUTTONS = false;
 
   // Switch2.Buttons bits (Protocol/Switch2Protocol.swift).
   const BIT = {
@@ -34,7 +37,8 @@
     BIT.l, BIT.r, 0, 0,
     BIT.minus, BIT.plus, BIT.lStick, BIT.rStick,
     BIT.dpadUp, BIT.dpadDown, BIT.dpadLeft, BIT.dpadRight,
-    BIT.home, BIT.capture, BIT.c, BIT.gl, BIT.gr,
+    BIT.home, BIT.capture,
+    ...(EXTRA_BUTTONS ? [BIT.c, BIT.gl, BIT.gr] : []),
   ];
   const BUTTON_COUNT = BUTTON_BITS.length;
 
@@ -193,12 +197,33 @@
     }
   });
 
+  // Chrome hands out a fresh immutable snapshot per getGamepads() call, and
+  // sites diff consecutive snapshots to detect edges. Mutating one shared
+  // object would make "previous" and "current" the same thing, so hand out
+  // copies the way the browser does.
+  function snapshot(pad) {
+    const copy = {
+      id: pad.id, index: pad.index, connected: pad.connected, mapping: pad.mapping,
+      timestamp: pad.timestamp, axes: pad.axes.slice(),
+      buttons: pad.buttons.map((b) => {
+        const button = { pressed: b.pressed, touched: b.touched, value: b.value };
+        if (typeof GamepadButton !== 'undefined') Object.setPrototypeOf(button, GamepadButton.prototype);
+        return button;
+      }),
+      hapticActuators: pad.hapticActuators,
+      vibrationActuator: pad.vibrationActuator,
+      __ftcwSlot: pad.__ftcwSlot,
+    };
+    if (typeof Gamepad !== 'undefined') Object.setPrototypeOf(copy, Gamepad.prototype);
+    return copy;
+  }
+
   Navigator.prototype.getGamepads = function () {
     const real = Array.from(nativeGetGamepads.call(this));
     if (pads.size === 0) return real;
     for (const pad of pads.values()) {
       while (real.length <= pad.index) real.push(null);
-      if (real[pad.index] === null || real[pad.index] === undefined) real[pad.index] = pad;
+      if (real[pad.index] === null || real[pad.index] === undefined) real[pad.index] = snapshot(pad);
     }
     return real;
   };
