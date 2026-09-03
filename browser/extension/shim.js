@@ -1,0 +1,201 @@
+// shim.js — runs in the page's main world. Wraps navigator.getGamepads() so
+// controllers streamed by the Finally the Controller Works app appear as
+// standard-mapping gamepads alongside any real ones, fires
+// gamepadconnected/gamepaddisconnected, and forwards vibrationActuator
+// effects back to the app (rumble).
+//
+// Button layout is POSITIONAL by default (the bottom face button is the
+// standard "A"/index 0, exactly as an Xbox pad would report), so on-screen
+// prompts in Xbox Cloud Gaming match what your thumb does. Set
+// NINTENDO_LABELS to true to map by label instead (Switch A → standard A).
+
+(() => {
+  if (navigator.__ftcwBridge) return;
+
+  const NINTENDO_LABELS = false;
+
+  // Switch2.Buttons bits (Protocol/Switch2Protocol.swift).
+  const BIT = {
+    y: 1 << 0, x: 1 << 1, b: 1 << 2, a: 1 << 3, r: 1 << 6, zr: 1 << 7,
+    minus: 1 << 8, plus: 1 << 9, rStick: 1 << 10, lStick: 1 << 11,
+    home: 1 << 12, capture: 1 << 13, c: 1 << 14,
+    dpadDown: 1 << 16, dpadUp: 1 << 17, dpadRight: 1 << 18, dpadLeft: 1 << 19,
+    l: 1 << 22, zl: 1 << 23, gr: 1 << 24, gl: 1 << 25,
+  };
+
+  // Standard Gamepad button indices → Switch2 bit. Indices 6/7 (triggers)
+  // are analog and handled separately; 17 = share/capture (Xbox Series X
+  // extension index), 18 = C, 19/20 = GL/GR back paddles.
+  const face = NINTENDO_LABELS
+    ? [BIT.a, BIT.b, BIT.x, BIT.y]      // by label
+    : [BIT.b, BIT.a, BIT.y, BIT.x];     // by position: bottom, right, left, top
+  const BUTTON_BITS = [
+    face[0], face[1], face[2], face[3],
+    BIT.l, BIT.r, 0, 0,
+    BIT.minus, BIT.plus, BIT.lStick, BIT.rStick,
+    BIT.dpadUp, BIT.dpadDown, BIT.dpadLeft, BIT.dpadRight,
+    BIT.home, BIT.capture, BIT.c, BIT.gl, BIT.gr,
+  ];
+  const BUTTON_COUNT = BUTTON_BITS.length;
+
+  const pads = new Map();       // slot → virtual pad
+  const nativeGetGamepads = Navigator.prototype.getGamepads;
+  let bridgeUp = false;
+
+  const rumbleToApp = (slot, strong, weak) =>
+    document.dispatchEvent(new CustomEvent('ftcw-rumble', {
+      detail: JSON.stringify({ t: 'rumble', slot, strong, weak }),
+    }));
+
+  function makeActuator(slot) {
+    let timer = null;
+    let pending = null;
+    const finish = (result) => {
+      if (pending) { const p = pending; pending = null; p(result); }
+    };
+    const stop = () => {
+      if (timer) { clearTimeout(timer); timer = null; }
+      rumbleToApp(slot, 0, 0);
+    };
+    return {
+      type: 'dual-rumble',
+      effects: ['dual-rumble'],
+      playEffect(type, params = {}) {
+        if (type !== 'dual-rumble') return Promise.resolve('invalid-parameter');
+        const strong = clamp01(params.strongMagnitude);
+        const weak = clamp01(params.weakMagnitude);
+        const duration = Math.max(0, Number(params.duration) || 0);
+        const startDelay = Math.max(0, Number(params.startDelay) || 0);
+        if (timer) clearTimeout(timer);
+        finish('preempted');
+        return new Promise((resolve) => {
+          pending = resolve;
+          const start = () => {
+            rumbleToApp(slot, strong, weak);
+            timer = setTimeout(() => { timer = null; rumbleToApp(slot, 0, 0); finish('complete'); }, duration);
+          };
+          if (startDelay > 0) timer = setTimeout(start, startDelay); else start();
+        });
+      },
+      reset() { stop(); finish('preempted'); return Promise.resolve('complete'); },
+      stop,
+    };
+  }
+
+  const clamp01 = (v) => Math.min(1, Math.max(0, Number(v) || 0));
+
+  const padId = (model, name) => `${name || model} (STANDARD GAMEPAD Vendor: 057e Product: 2069)`;
+
+  function makePad(slot, model, name) {
+    const buttons = [];
+    for (let i = 0; i < BUTTON_COUNT; i++) buttons.push({ pressed: false, touched: false, value: 0 });
+    return {
+      id: padId(model, name),
+      index: -1,
+      connected: true,
+      mapping: 'standard',
+      timestamp: performance.now(),
+      axes: [0, 0, 0, 0],
+      buttons,
+      hapticActuators: [],
+      vibrationActuator: makeActuator(slot),
+      __ftcwSlot: slot,
+    };
+  }
+
+  // Place virtual pads in the lowest indices not occupied by real gamepads.
+  function assignIndex(pad) {
+    const taken = new Set();
+    for (const g of nativeGetGamepads.call(navigator)) if (g) taken.add(g.index);
+    for (const p of pads.values()) if (p !== pad && p.index >= 0) taken.add(p.index);
+    let i = 0;
+    while (taken.has(i)) i++;
+    pad.index = i;
+  }
+
+  function fire(type, pad) {
+    const ev = new Event(type);
+    Object.defineProperty(ev, 'gamepad', { value: pad, enumerable: true });
+    window.dispatchEvent(ev);
+  }
+
+  function applyState(pad, m) {
+    const b = m.b >>> 0;
+    const btn = pad.buttons;
+    for (let i = 0; i < BUTTON_COUNT; i++) {
+      const bit = BUTTON_BITS[i];
+      if (!bit) continue;
+      const on = (b & bit) !== 0;
+      btn[i].pressed = on; btn[i].touched = on; btn[i].value = on ? 1 : 0;
+    }
+    const lt = Math.max((b & BIT.zl) ? 1 : 0, (m.lt || 0) / 255);
+    const rt = Math.max((b & BIT.zr) ? 1 : 0, (m.rt || 0) / 255);
+    btn[6].value = lt; btn[6].pressed = lt > 0.5; btn[6].touched = lt > 0;
+    btn[7].value = rt; btn[7].pressed = rt > 0.5; btn[7].touched = rt > 0;
+    // App axes: +y = up. Standard Gamepad: +y = down.
+    pad.axes[0] = m.lx; pad.axes[1] = -m.ly; pad.axes[2] = m.rx; pad.axes[3] = -m.ry;
+    pad.timestamp = performance.now();
+  }
+
+  function disconnectAll() {
+    for (const [slot, pad] of pads) {
+      pads.delete(slot);
+      pad.connected = false;
+      pad.vibrationActuator.stop();
+      fire('gamepaddisconnected', pad);
+    }
+  }
+
+  document.addEventListener('ftcw-bridge', (ev) => {
+    let m;
+    try { m = JSON.parse(ev.detail); } catch { return; }
+    switch (m.t) {
+      case 'bridge':
+        bridgeUp = !!m.up;
+        if (!bridgeUp) disconnectAll();
+        break;
+      case 'connected': {
+        let pad = pads.get(m.slot);
+        if (pad) { pad.id = padId(m.model, m.name); break; }
+        pad = makePad(m.slot, m.model, m.name);
+        assignIndex(pad);
+        pads.set(m.slot, pad);
+        fire('gamepadconnected', pad);
+        break;
+      }
+      case 'name': {
+        const pad = pads.get(m.slot);
+        if (pad) pad.id = padId('', m.name);
+        break;
+      }
+      case 'state': {
+        const pad = pads.get(m.slot);
+        if (pad) applyState(pad, m);
+        break;
+      }
+      case 'disconnected': {
+        const pad = pads.get(m.slot);
+        if (!pad) break;
+        pads.delete(m.slot);
+        pad.connected = false;
+        pad.vibrationActuator.stop();
+        fire('gamepaddisconnected', pad);
+        break;
+      }
+    }
+  });
+
+  Navigator.prototype.getGamepads = function () {
+    const real = Array.from(nativeGetGamepads.call(this));
+    if (pads.size === 0) return real;
+    for (const pad of pads.values()) {
+      while (real.length <= pad.index) real.push(null);
+      if (real[pad.index] === null || real[pad.index] === undefined) real[pad.index] = pad;
+    }
+    return real;
+  };
+
+  Object.defineProperty(navigator, '__ftcwBridge', {
+    value: { get pads() { return [...pads.values()]; }, get up() { return bridgeUp; } },
+  });
+})();

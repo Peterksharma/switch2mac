@@ -26,8 +26,14 @@ which is **currently waiting on Apple's approval**. Until it arrives:
   that library sees real game controllers — including rumble flowing
   back to the controller.
 
-Once Apple's approval lands, the SDL step disappears and controllers
-will just show up system-wide.
+- **To use controllers in a web game** — Xbox Cloud Gaming, GeForce NOW,
+  Luna — the app also serves controller state on
+  `ws://127.0.0.1:24810`, and a small browser extension in
+  [`browser/`](browser/) presents them to the page as standard
+  gamepads, rumble included. Chromium browsers only.
+
+Once Apple's approval lands, the SDL and browser steps become optional
+and controllers will just show up system-wide.
 
 ## Install
 
@@ -57,6 +63,16 @@ Gopher64 is SDL-based, so it works through the bridge today:
 The same recipe works for any SDL3-based emulator or game — see
 [`sdl/README.md`](sdl/README.md) for the general one-line launch method.
 
+## Using it with Xbox Cloud Gaming (or any web game)
+
+1. Load the unpacked extension from [`browser/extension`](browser/extension)
+   in Chrome, Edge, Brave, Arc or any other Chromium browser
+   (`chrome://extensions` → Developer mode → Load unpacked).
+2. Start the menu-bar app and connect your controller.
+3. Open <https://www.xbox.com/play>: the controller is a standard gamepad,
+   with rumble. Details and the button table are in
+   [`browser/README.md`](browser/README.md).
+
 ## Features
 
 **Working now, in the beta UI**
@@ -78,6 +94,8 @@ The same recipe works for any SDL3-based emulator or game — see
 - Button remapping per controller
 - Joy-Con 2 **mouse mode** (the optical sensor, used flat on the desk)
 - UDP/SDL bridge for games and emulators, with game rumble passthrough
+- WebSocket/browser bridge for web games (Xbox Cloud Gaming, GeForce NOW),
+  with rumble passthrough
 - Signed auto-updates, first-run tour, settings import/export, live
   log with BLE gap diagnostics, launch-at-login
 
@@ -117,7 +135,8 @@ Controller ──BLE──> BridgeEngine ──> ControllerSession (per slot)
                        ▼
               ControllerOutputSink protocol
                ├── VirtualHIDSink (CoreHID; entitlement-gated)
-               └── UDPHub        (SDL-compat, ports 24800-24803)
+               ├── UDPHub        (SDL-compat, ports 24800-24803)
+               └── WebSocketHub  (browser extension, ws://127.0.0.1:24810)
 ```
 
 - `Protocol/Switch2Protocol.swift` — the wire protocol, transport-free.
