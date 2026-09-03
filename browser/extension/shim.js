@@ -88,8 +88,14 @@
 
   function makePad(slot, model, name) {
     const buttons = [];
-    for (let i = 0; i < BUTTON_COUNT; i++) buttons.push({ pressed: false, touched: false, value: 0 });
-    return {
+    for (let i = 0; i < BUTTON_COUNT; i++) {
+      const button = { pressed: false, touched: false, value: 0 };
+      // Own properties shadow the native accessors, so `instanceof` checks
+      // pass without ever touching the (throwing) prototype getters.
+      if (typeof GamepadButton !== 'undefined') Object.setPrototypeOf(button, GamepadButton.prototype);
+      buttons.push(button);
+    }
+    const pad = {
       id: padId(model, name),
       index: -1,
       connected: true,
@@ -101,6 +107,8 @@
       vibrationActuator: makeActuator(slot),
       __ftcwSlot: slot,
     };
+    if (typeof Gamepad !== 'undefined') Object.setPrototypeOf(pad, Gamepad.prototype);
+    return pad;
   }
 
   // Place virtual pads in the lowest indices not occupied by real gamepads.
