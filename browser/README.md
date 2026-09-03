@@ -36,7 +36,42 @@ Controller ──BLE──> menu-bar app ──ws://127.0.0.1:24810──> exten
 4. Open <https://www.xbox.com/play> and play. Rumble works.
 
 Safari is not supported: it blocks `ws://` connections from `https://`
-pages and cannot load unpacked extensions.
+pages and cannot load unpacked extensions. Firefox is not supported
+either (different extension packaging); Chrome, Edge, Brave, Arc,
+Vivaldi and Opera all work.
+
+Verified on xbox.com/play with a Pro Controller 2: sticks, buttons,
+triggers and rumble.
+
+## If nothing shows up
+
+Work down the list; each step depends on the one before.
+
+1. **Is the app running with the bridge?** Open the dashboard log and
+   look for `browser bridge on ws://127.0.0.1:24810`. If it says the
+   port is busy, another copy of the app is running — quit it.
+2. **Is the controller connected?** The menu-bar icon fills in and the
+   dashboard shows the player. If not, press any button (paired) or
+   hold Sync next to the USB-C port (new controller).
+3. **Is the extension loaded and enabled?** `chrome://extensions` must
+   list *Finally the Controller Works — Browser Bridge* with the toggle
+   on, no red error badge. After editing any file in `extension/`,
+   click its reload icon.
+4. **Is the site in the list?** The extension only runs on the sites in
+   `manifest.json` → `matches`. Add yours and reload the extension.
+5. **Reload the game tab.** The shim installs when the page loads; a tab
+   that was open before the extension loaded never gets it.
+6. **Still nothing?** Open <https://hardwaretester.com/gamepad> — it is
+   in the list — and press a button. If the pad appears there but not
+   in the game, the game is the problem (some sites ignore gamepads
+   that connect after the page loaded: reload with the controller
+   already on). If it does not appear there either, open the tab's
+   DevTools console and look for `ftcw` errors, then file an issue with
+   that output.
+
+The service worker's own console (`chrome://extensions` → *Inspect
+views: service worker*) shows the WebSocket state if you need to go
+deeper.
 
 ## Layout
 

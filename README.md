@@ -65,13 +65,23 @@ The same recipe works for any SDL3-based emulator or game — see
 
 ## Using it with Xbox Cloud Gaming (or any web game)
 
-1. Load the unpacked extension from [`browser/extension`](browser/extension)
-   in Chrome, Edge, Brave, Arc or any other Chromium browser
-   (`chrome://extensions` → Developer mode → Load unpacked).
-2. Start the menu-bar app and connect your controller.
-3. Open <https://www.xbox.com/play>: the controller is a standard gamepad,
-   with rumble. Details and the button table are in
-   [`browser/README.md`](browser/README.md).
+Verified on xbox.com/play. Chromium browsers only (Chrome, Edge, Brave,
+Arc, Vivaldi, Opera); Safari and Firefox cannot run this bridge.
+
+1. Get the extension folder: clone this repo, or download the ZIP from
+   GitHub (**Code → Download ZIP**) and unpack it. You need the
+   [`browser/extension`](browser/extension) folder.
+2. In the browser open `chrome://extensions` (`edge://extensions`,
+   `brave://extensions`, …), turn on **Developer mode** (top right),
+   click **Load unpacked** and pick that `browser/extension` folder.
+3. Start the menu-bar app and press a button on the controller so it
+   connects.
+4. Open <https://www.xbox.com/play> and play: the controller is a
+   standard gamepad, with rumble. Xbox prompts match the physical
+   positions (Switch B is where Xbox A is).
+
+Button table, adding other game sites, troubleshooting and the wire
+protocol are in [`browser/README.md`](browser/README.md).
 
 ## Features
 
