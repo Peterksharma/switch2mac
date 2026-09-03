@@ -16,6 +16,7 @@
 //     {"t":"ping"}   every 15 s (keeps extension service workers alive)
 //   page → hub:
 //     {"t":"rumble","slot":0,"strong":0…1,"weak":0…1}
+//     {"t":"stats",…}   extension delivery telemetry, echoed to all clients
 // Every new client receives "hello" plus one "connected"/"name" per
 // currently connected player, so late joiners (a tab opened after the
 // controller paired) see the full picture immediately.
@@ -137,11 +138,21 @@ final class WebSocketHub: ControllerOutputSink, @unchecked Sendable {
 
     private func handle(_ data: Data) {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object["t"] as? String == "rumble",
-              let slot = object["slot"] as? Int else { return }
-        let strong = min(max((object["strong"] as? Double) ?? 0, 0), 1)
-        let weak = min(max((object["weak"] as? Double) ?? 0, 0), 1)
-        onRumble?(slot, strong, weak)
+              let type = object["t"] as? String else { return }
+        switch type {
+        case "rumble":
+            guard let slot = object["slot"] as? Int else { return }
+            let strong = min(max((object["strong"] as? Double) ?? 0, 0), 1)
+            let weak = min(max((object["weak"] as? Double) ?? 0, 0), 1)
+            onRumble?(slot, strong, weak)
+        case "stats":
+            // Page-side delivery telemetry from the extension: log it and
+            // echo to every client so it can be read outside the browser.
+            bridgeLog(.debug, "wshub", "client stats: \(String(decoding: data, as: UTF8.self))")
+            broadcast(String(decoding: data, as: UTF8.self))
+        default:
+            break
+        }
     }
 
     // MARK: Sending

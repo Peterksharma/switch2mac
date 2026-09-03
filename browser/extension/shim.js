@@ -52,10 +52,38 @@
   const nativeGetGamepads = Navigator.prototype.getGamepads;
   let bridgeUp = false;
 
-  const rumbleToApp = (slot, strong, weak) =>
-    document.dispatchEvent(new CustomEvent('ftcw-rumble', {
-      detail: JSON.stringify({ t: 'rumble', slot, strong, weak }),
-    }));
+  const toApp = (obj) =>
+    document.dispatchEvent(new CustomEvent('ftcw-up', { detail: JSON.stringify(obj) }));
+  const rumbleToApp = (slot, strong, weak) => toApp({ t: 'rumble', slot, strong, weak });
+
+  // Delivery telemetry: how state messages actually arrive in this page
+  // (intervals between them) and how often the site polls getGamepads().
+  // Sent to the hub every 5 s as {"t":"stats"}; the hub rebroadcasts it to
+  // any other client, so it can be read outside the browser.
+  const STATS_WINDOW_MS = 5000;
+  let arrivals = new Map();   // slot → [performance.now(), …]
+  let getCalls = 0;
+  let statsTimer = null;
+  function noteArrival(slot) {
+    let a = arrivals.get(slot);
+    if (!a) { a = []; arrivals.set(slot, a); }
+    a.push(performance.now());
+    if (statsTimer === null) statsTimer = setTimeout(flushStats, STATS_WINDOW_MS);
+  }
+  function flushStats() {
+    statsTimer = null;
+    for (const [slot, a] of arrivals) {
+      const gaps = [];
+      for (let i = 1; i < a.length; i++) gaps.push(a[i] - a[i - 1]);
+      gaps.sort((x, y) => x - y);
+      const q = (f) => gaps.length ? +gaps[Math.min(gaps.length - 1, Math.floor(gaps.length * f))].toFixed(1) : 0;
+      toApp({ t: 'stats', slot, win: STATS_WINDOW_MS, n: a.length, med: q(0.5), p95: q(0.95),
+              max: gaps.length ? +gaps[gaps.length - 1].toFixed(1) : 0, over60: gaps.filter((g) => g > 60).length,
+              gets: getCalls, hidden: document.hidden, url: location.host });
+    }
+    arrivals = new Map();
+    getCalls = 0;
+  }
 
   function makeActuator(slot) {
     let timer = null;
@@ -190,7 +218,7 @@
       }
       case 'state': {
         const pad = pads.get(m.slot);
-        if (pad) applyState(pad, m);
+        if (pad) { applyState(pad, m); noteArrival(m.slot); }
         break;
       }
       case 'disconnected': {
@@ -229,6 +257,7 @@
   Navigator.prototype.getGamepads = function () {
     const real = Array.from(nativeGetGamepads.call(this));
     if (pads.size === 0) return real;
+    getCalls++;
     for (const pad of pads.values()) {
       while (real.length <= pad.index) real.push(null);
       if (real[pad.index] === null || real[pad.index] === undefined) real[pad.index] = snapshot(pad);
