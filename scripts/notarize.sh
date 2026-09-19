@@ -49,7 +49,7 @@ PROVISIONING_PROFILE="${PROVISIONING_PROFILE:-}" SIGN_IDENTITY="$IDENTITY" \
 
 echo "==> Zipping for submission"
 rm -f "$ZIP"
-ditto -c -k --keepParent "$APP" "$ZIP"
+ditto -c -k --keepParent --noextattr --norsrc "$APP" "$ZIP"
 
 echo "==> Submitting to Apple notary service (this takes a few minutes)"
 xcrun notarytool submit "$ZIP" \
@@ -61,8 +61,15 @@ xcrun stapler staple "$APP"
 xcrun stapler validate "$APP"
 
 echo "==> Re-zipping the stapled app for distribution"
+# --noextattr: without it ditto shadows each file's extended attributes as an
+# AppleDouble "._" entry. Finder merges those back on expand, but a user who
+# unzips from the command line gets them written INSIDE the bundle, where
+# they are files the signature does not account for — codesign --verify then
+# fails on an app that was perfectly good. (xattr -cr can't prevent this:
+# com.apple.provenance is system-protected and cannot be removed.) The staple
+# ticket is a real file, Contents/CodeResources, so it is unaffected.
 rm -f "$ZIP"
-ditto -c -k --keepParent "$APP" "$ZIP"
+ditto -c -k --keepParent --noextattr --norsrc "$APP" "$ZIP"
 
 echo "==> Generating appcast.json for the auto-updater"
 VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$APP/Contents/Info.plist")
