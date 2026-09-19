@@ -32,6 +32,36 @@ final class Updater: ObservableObject {
     /// Our Developer ID team — downloads must be signed by this team.
     nonisolated static let requiredTeamID = "4BA4S6WKX7"
 
+    /// Why an in-place update can't work from here, or nil if it can.
+    ///
+    /// The installer swaps the running bundle, which needs a writable parent
+    /// directory. Two ways that fails in practice:
+    ///
+    ///  * **App Translocation** — a quarantined app launched from anywhere
+    ///    but /Applications (straight out of the Downloads unzip, say) runs
+    ///    from a read-only /private/var/.../AppTranslocation mount.
+    ///  * Running from a mounted .dmg, read-only for the same reason.
+    ///
+    /// Both failed silently and expensively before this check: the helper
+    /// script can't stage the new bundle, but the app has already quit to let
+    /// it work — so the user clicks Install and their app just disappears.
+    nonisolated static var installBlockedReason: String? {
+        let bundle = Bundle.main.bundleURL
+        if bundle.path.contains("/AppTranslocation/") {
+            return "macOS is running this copy from a temporary read-only "
+                + "location, so it can't replace itself. Move Finally the "
+                + "Controller Works to your Applications folder, reopen it, "
+                + "and updates will install normally."
+        }
+        if !FileManager.default.isWritableFile(
+            atPath: bundle.deletingLastPathComponent().path) {
+            return "This copy is running from a read-only location, so it "
+                + "can't replace itself. Move Finally the Controller Works "
+                + "to your Applications folder and reopen it."
+        }
+        return nil
+    }
+
     enum State: Equatable {
         case idle
         case checking
@@ -154,6 +184,11 @@ final class Updater: ObservableObject {
     /// User-confirmed install: hand off to the detached installer and quit.
     func installNow() {
         guard case .readyToInstall = state, let app = verifiedApp else { return }
+        // Never quit the app for a swap that cannot succeed.
+        if let reason = Self.installBlockedReason {
+            state = .failed(reason)
+            return
+        }
         verifiedApp = nil        // a second click must be a no-op
         state = .installing
         // The consent window is unbounded — the temp bundle may have been
@@ -336,8 +371,20 @@ struct UpdaterView: View {
                         ScrollView { Text(notes).font(.caption).frame(maxWidth: .infinity, alignment: .leading) }
                             .frame(maxHeight: 140)
                     }
-                    Button("Download & Install") { updater.downloadAndInstall(entry) }
-                        .buttonStyle(.borderedProminent)
+                    if let blocked = Updater.installBlockedReason {
+                        // Say so before the download rather than after it.
+                        Text(blocked)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        Button("Reveal in Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting(
+                                [Bundle.main.bundleURL])
+                        }
+                    } else {
+                        Button("Download & Install") { updater.downloadAndInstall(entry) }
+                            .buttonStyle(.borderedProminent)
+                    }
                 }
             case .downloading(let p):
                 if let p {

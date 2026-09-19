@@ -26,7 +26,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP="build/Finally the Controller Works.app"
+APP_NAME="Finally the Controller Works"
+APP="build/$APP_NAME.app"
 ZIP="build/FinallyTheControllerWorks.zip"
 IDENTITY="Developer ID Application: Peter Sharma (4BA4S6WKX7)"
 KEYCHAIN_PROFILE="ftcw-notary"
@@ -71,9 +72,33 @@ echo "==> Re-zipping the stapled app for distribution"
 rm -f "$ZIP"
 ditto -c -k --keepParent --noextattr --norsrc "$APP" "$ZIP"
 
-echo "==> Generating appcast.json for the auto-updater"
 VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$APP/Contents/Info.plist")
 BUILD=$(/usr/libexec/PlistBuddy -c "Print CFBundleVersion" "$APP/Contents/Info.plist")
+DMG="build/FinallyTheControllerWorks-$VERSION.dmg"
+
+# The DMG is the human download. It matters beyond looking familiar: dragging
+# to /Applications is what keeps macOS from App-Translocating the app into a
+# read-only mount, where it cannot update itself. The zip stays too — that is
+# what the in-app updater fetches.
+echo "==> Building the DMG"
+STAGE="build/dmg-stage"
+rm -rf "$STAGE" "$DMG"
+mkdir -p "$STAGE"
+ditto --noextattr --norsrc "$APP" "$STAGE/$APP_NAME.app"
+ln -s /Applications "$STAGE/Applications"
+hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO \
+    -quiet "$DMG"
+rm -rf "$STAGE"
+codesign --force --timestamp --sign "$IDENTITY" "$DMG"
+
+echo "==> Notarizing the DMG (the app inside is already stapled)"
+xcrun notarytool submit "$DMG" \
+    --keychain-profile "$KEYCHAIN_PROFILE" \
+    --wait
+xcrun stapler staple "$DMG"
+xcrun stapler validate "$DMG"
+
+echo "==> Generating appcast.json for the auto-updater"
 SHA=$(shasum -a 256 "$ZIP" | awk '{print $1}')
 # Hosted on GitHub Releases: each release v$VERSION carries the zip and
 # appcast.json as assets. The app's feed reads releases/latest/download/
@@ -93,9 +118,10 @@ EOF
 
 echo "Done."
 echo "  App:     $APP (notarized + stapled)"
-echo "  Zip:     $ZIP"
+echo "  DMG:     $DMG  ← the download for humans"
+echo "  Zip:     $ZIP  ← what the in-app updater fetches"
 echo "  Appcast: build/appcast.json"
 echo "Publish with:"
 echo "  git tag v$VERSION && git push origin main --tags"
-echo "  gh release create v$VERSION \"$ZIP\" build/appcast.json \\"
+echo "  gh release create v$VERSION \"$DMG\" \"$ZIP\" build/appcast.json \\"
 echo "      --title \"v$VERSION\" --notes \"…\""

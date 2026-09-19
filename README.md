@@ -27,9 +27,11 @@ the virtual pad.
 
 ## Install
 
-1. Download the latest release from the
+1. Download the `.dmg` from the
    [Releases page](https://github.com/Peterksharma/switch2mac/releases),
-   unzip, and drag **Finally the Controller Works.app** to Applications.
+   open it, and drag **Finally the Controller Works** into Applications.
+   Keep it there: macOS runs apps launched from Downloads out of a
+   temporary read-only copy, where they can't install their own updates.
 2. Launch it — it lives in the menu bar (game-controller icon).
 3. Pair: hold the **Sync** button on the controller (next to the USB-C
    port) until the player LEDs sweep. After that first pairing, just
