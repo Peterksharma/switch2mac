@@ -2,9 +2,16 @@
 # notarize.sh — build, sign, notarize, and staple the app for distribution.
 #
 # Prerequisites (one-time):
-#   1. A Developer ID Application certificate in the login keychain
-#      (already installed for this project).
-#   2. An app-specific password from https://account.apple.com
+#   1. A Developer ID Application certificate + private key in the login
+#      keychain (check: security find-identity -v -p codesigning).
+#   2. The Developer ID provisioning profile carrying the HID virtual-device
+#      entitlement, saved as
+#         signing/FinallyTheControllerWorks.provisionprofile
+#      (Apple granted the entitlement to team 4BA4S6WKX7; the profile is what
+#      hands it to the app. Verify with ./scripts/check-profile.sh.)
+#      Without it the build still notarizes, but ships with no system-wide
+#      virtual gamepads — set ALLOW_NO_HID=1 to do that deliberately.
+#   3. An app-specific password from https://account.apple.com
 #      (Sign-In & Security → App-Specific Passwords), stored in the keychain:
 #         xcrun notarytool store-credentials ftcw-notary \
 #             --apple-id "peterksharma@gmail.com" \
@@ -23,9 +30,22 @@ APP="build/Finally the Controller Works.app"
 ZIP="build/FinallyTheControllerWorks.zip"
 IDENTITY="Developer ID Application: Peter Sharma (4BA4S6WKX7)"
 KEYCHAIN_PROFILE="ftcw-notary"
+PROFILE="${PROVISIONING_PROFILE:-signing/FinallyTheControllerWorks.provisionprofile}"
+
+# The release exists to ship the virtual-gamepad path, so an accidental
+# profile-less build must not slip out as a release.
+if [ ! -f "$PROFILE" ] && [ "${ALLOW_NO_HID:-0}" != "1" ]; then
+    echo "error: no provisioning profile at $PROFILE" >&2
+    echo "       Without it the app cannot create virtual gamepads, so games" >&2
+    echo "       would still need the SDL bridge. Download the Developer ID" >&2
+    echo "       profile for com.petersharma.finallythecontrollerworks, or" >&2
+    echo "       re-run with ALLOW_NO_HID=1 to ship without the entitlement." >&2
+    exit 1
+fi
 
 echo "==> Building signed app"
-SIGN_IDENTITY="$IDENTITY" ./scripts/build-app.sh
+PROVISIONING_PROFILE="${PROVISIONING_PROFILE:-}" SIGN_IDENTITY="$IDENTITY" \
+    ./scripts/build-app.sh
 
 echo "==> Zipping for submission"
 rm -f "$ZIP"

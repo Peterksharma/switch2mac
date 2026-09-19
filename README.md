@@ -5,29 +5,25 @@ Joy-Con 2 (solo or as a linked pair), and the NSO GameCube pad — over
 Bluetooth, up to four at once. A native menu-bar app: launch it, press a
 button on your controller, play. The first of its kind.
 
-**Status: beta.** The release build is Developer ID-signed and works
-today. One honest caveat, explained below: until Apple approves the
-app's driver entitlement, games can't see the controllers *directly* —
-you use the provided SDL bridge for that (Gopher64 works now).
+**Status: beta.** The release build is Developer ID-signed, notarized,
+and your controllers show up as ordinary game controllers to every app
+on the Mac — no per-game setup, no bridge, no relaunch tricks.
 
-## The plan, and the Apple wait
+## System-wide controllers
 
-The goal is for every controller to appear to macOS as a normal game
-controller that any app can use (CoreHID virtual gamepads, macOS 15+).
-That requires the `com.apple.developer.hid.virtual.device` entitlement,
-which is **currently waiting on Apple's approval**. Until it arrives:
+Each connected controller becomes a real HID gamepad on the Mac
+(CoreHID virtual devices, macOS 15+), so anything that reads a game
+controller reads yours: Steam, emulators, browser games, native ports.
+This is what the `com.apple.developer.hid.virtual.device` entitlement
+buys, and **Apple has granted it** to this app — releases from v0.2.0
+carry it in an embedded provisioning profile.
 
-- Everything in the dashboard works: connection, battery, sensors,
-  calibration, rumble, LEDs, button remapping, Joy-Con mouse mode.
-- **To use controllers in a game or emulator**, the app publishes
-  controller state over local UDP (`udp://127.0.0.1:24800-24803`, one
-  port per player), and a patched build of SDL with an `SDL_S2UDP`
-  joystick backend picks it up. Any SDL-based program launched with
-  that library sees real game controllers — including rumble flowing
-  back to the controller.
-
-Once Apple's approval lands, the SDL step disappears and controllers
-will just show up system-wide.
+The older UDP path is still there and still runs alongside it: the app
+publishes controller state on `udp://127.0.0.1:24800-24803` (one port
+per player), and the patched SDL build in [`sdl/`](sdl/) reads it. You
+no longer need it for normal use — keep it for SDL programs you want to
+drive directly, or as a fallback if a game's own HID handling misreads
+the virtual pad.
 
 ## Install
 
@@ -44,23 +40,25 @@ will just show up system-wide.
 The app auto-updates from this repository's releases (every update is
 signature-verified before install).
 
-## Using it with Gopher64 (N64 emulator)
+## Using it with games and emulators
 
-Gopher64 is SDL-based, so it works through the bridge today:
+Start the app, connect a controller, launch the game. It appears in the
+game's controller list like any USB pad — Gopher64, other emulators,
+Steam titles, anything that speaks HID.
 
-1. Get the patched SDL library from this repo: [`sdl/`](sdl/).
-2. Launch Gopher64 with the patched library (see `sdl/README.md` for
-   the exact launch command).
-3. Start the menu-bar app, connect your controller, and it appears in
-   Gopher64 as a standard game controller — sticks, buttons, and rumble.
-
-The same recipe works for any SDL3-based emulator or game — see
-[`sdl/README.md`](sdl/README.md) for the general one-line launch method.
+Two things the virtual pad does not carry: rumble (generic HID gamepads
+have no standard rumble report on macOS) and motion. For those in an
+SDL-based program, launch it against the patched SDL build in
+[`sdl/`](sdl/), which reads the UDP feed and passes rumble back to the
+controller — see [`sdl/README.md`](sdl/README.md) for the one-line
+launch method.
 
 ## Features
 
 **Working now, in the beta UI**
 
+- System-wide virtual game controllers (CoreHID): every connected
+  controller is a normal HID gamepad to every app on the Mac
 - Bluetooth connection for up to 4 controllers (Pro Controller 2,
   Joy-Con 2 L/R and linked pairs, NSO GameCube pad), auto-reconnecting
   on any button press once paired
@@ -81,10 +79,8 @@ The same recipe works for any SDL3-based emulator or game — see
 - Signed auto-updates, first-run tour, settings import/export, live
   log with BLE gap diagnostics, launch-at-login
 
-**Built, but hidden until they're polished (or until Apple approval)**
+**Built, but hidden until they're polished**
 
-- Virtual system-wide game controllers (CoreHID) — blocked on the
-  entitlement above
 - Keyboard mapping (controller buttons → keystrokes, per-app profiles)
 - Air-gesture macros, Reaction Draft party game, Sensor Challenges
 - Protocol experiments: NFC/amiibo reading, controller-audio research
@@ -102,12 +98,21 @@ ongoing controller-audio investigation — is published in
 ```sh
 ./scripts/build-app.sh                    # ad-hoc: everything except virtual HID
 SIGN_IDENTITY="Developer ID Application: …" \
-PROVISIONING_PROFILE=path/to.provisionprofile \
   ./scripts/build-app.sh                  # full build incl. virtual gamepads
 ```
 
 Output: `build/Finally the Controller Works.app`. Swift 6 toolchain,
 macOS 15+ target, no external dependencies.
+
+The virtual-gamepad path is entitlement-gated, so the full build needs a
+Developer ID provisioning profile carrying
+`com.apple.developer.hid.virtual.device`, saved as
+`signing/FinallyTheControllerWorks.provisionprofile` (or pointed at with
+`PROVISIONING_PROFILE=`). `./scripts/check-profile.sh` verifies a profile
+— entitlement, App ID, team, expiry, certificate — before it gets
+anywhere near a release; `./scripts/notarize.sh` builds, notarizes,
+staples, and writes the appcast. An ad-hoc build still runs everything
+else, with games served by the UDP/SDL path.
 
 ## Architecture
 
@@ -116,7 +121,7 @@ Controller ──BLE──> BridgeEngine ──> ControllerSession (per slot)
                        │  handshake, keep-alive, decode, rumble
                        ▼
               ControllerOutputSink protocol
-               ├── VirtualHIDSink (CoreHID; entitlement-gated)
+               ├── VirtualHIDSink (CoreHID; system-wide gamepads)
                └── UDPHub        (SDL-compat, ports 24800-24803)
 ```
 

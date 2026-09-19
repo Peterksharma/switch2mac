@@ -1,8 +1,10 @@
 # The SDL bridge (S2UDP)
 
-This folder is how you use Switch 2 controllers **in games and
-emulators today**, while the app's virtual-controller entitlement waits
-on Apple.
+Since v0.2.0 the app presents controllers as system-wide HID gamepads,
+so most games need nothing from this folder. It stays useful for two
+things the generic virtual pad cannot carry: **rumble** and **motion**.
+An SDL3 program launched against this library gets both, straight from
+the app's UDP streams.
 
 | File | What it is |
 |---|---|
