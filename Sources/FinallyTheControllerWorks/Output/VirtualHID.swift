@@ -3,7 +3,7 @@
 // With this active, ANY app on the Mac — unaltered Gopher64, Steam, ports —
 // sees a normal HID gamepad. Requires the com.apple.developer.hid.virtual.device
 // entitlement (Apple Developer provisioning); without it, device creation
-// fails and we log once — the UDP/SDL path still works.
+// fails and we say so once — the UDP/SDL path still works.
 //
 // Report layout (14 bytes, must match `gamepadDescriptor`):
 //   bytes 0-2: 19 buttons (bit i = button i in our fixed order) + 5 pad bits
@@ -27,7 +27,22 @@ final class VirtualHIDSink: ControllerOutputSink, @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "com.petersharma.ftcw.virtualhid")
     private var devices: [Int: HIDVirtualDevice] = [:]
-    private var entitlementDenied = false
+
+    /// Slots with a live controller, so a retry never publishes a gamepad for
+    /// a controller that walked away in the meantime.
+    private var activeSlots: Set<Int> = []
+
+    /// macOS registers an app's embedded provisioning profile lazily: the
+    /// very first launch of a freshly installed build can be refused
+    /// (IOServiceOpen → kIOReturnNotPermitted) with the entitlement fully in
+    /// place, and then succeed seconds later. Observed on the first run of
+    /// every newly signed build. So retry instead of concluding the
+    /// entitlement is missing, and never latch that conclusion — one early
+    /// refusal must not cost the whole session.
+    private var attempts = 0
+    private var warnedAboutEntitlement = false
+    private static let maxAttempts = 4
+    private static let retryDelay = DispatchTimeInterval.milliseconds(1500)
 
     /// Generic gamepad: 19 buttons, two 16-bit stick pairs, two 8-bit
     /// triggers, one hat. Mirrors the probe descriptor that validated the
@@ -83,35 +98,55 @@ final class VirtualHIDSink: ControllerOutputSink, @unchecked Sendable {
 
     func controllerConnected(slot: Int, model: Switch2.Model) {
         queue.async { [weak self] in
-            guard let self, self.devices[slot] == nil, !self.entitlementDenied else { return }
-            let props = HIDVirtualDevice.Properties(
-                descriptor: Self.gamepadDescriptor,
-                vendorID: UInt32(Switch2.nintendoVendorID),
-                productID: UInt32(model.rawValue),
-                transport: nil,
-                product: "\(model.displayName) (Finally)",
-                manufacturer: "Finally the Controller Works",
-                serialNumber: "FTCW-slot\(slot + 1)",
-                uniqueID: "com.petersharma.ftcw.slot\(slot + 1)")
-            guard let device = HIDVirtualDevice(properties: props) else {
-                self.entitlementDenied = true
+            guard let self else { return }
+            self.activeSlots.insert(slot)
+            self.attempts = 0          // a fresh round of tries per connect
+            self.createDevice(slot: slot, model: model)
+        }
+    }
+
+    /// Create the virtual gamepad for a slot, retrying a few times before
+    /// deciding the entitlement really is absent. Must run on `queue`.
+    private func createDevice(slot: Int, model: Switch2.Model) {
+        guard devices[slot] == nil, activeSlots.contains(slot) else { return }
+        let props = HIDVirtualDevice.Properties(
+            descriptor: Self.gamepadDescriptor,
+            vendorID: UInt32(Switch2.nintendoVendorID),
+            productID: UInt32(model.rawValue),
+            transport: nil,
+            product: "\(model.displayName) (Finally)",
+            manufacturer: "Finally the Controller Works",
+            serialNumber: "FTCW-slot\(slot + 1)",
+            uniqueID: "com.petersharma.ftcw.slot\(slot + 1)")
+        guard let device = HIDVirtualDevice(properties: props) else {
+            attempts += 1
+            if attempts < Self.maxAttempts {
+                bridgeLog(.info, "virtualhid",
+                          "slot \(slot + 1): virtual gamepad refused "
+                          + "(attempt \(attempts)); retrying")
+                queue.asyncAfter(deadline: .now() + Self.retryDelay) { [weak self] in
+                    self?.createDevice(slot: slot, model: model)
+                }
+            } else if !warnedAboutEntitlement {
+                warnedAboutEntitlement = true
                 bridgeLog(.warning, "virtualhid",
                           "virtual gamepad creation refused — app is missing the "
                           + "com.apple.developer.hid.virtual.device entitlement. "
                           + "Games will see controllers via the SDL path only.")
-                return
             }
-            self.devices[slot] = device
-            Task {
-                await device.activate(delegate: NullHIDDelegate.shared)
-                bridgeLog(.info, "virtualhid",
-                          "slot \(slot + 1): system-wide virtual gamepad created")
-            }
+            return
+        }
+        devices[slot] = device
+        Task {
+            await device.activate(delegate: NullHIDDelegate.shared)
+            bridgeLog(.info, "virtualhid",
+                      "slot \(slot + 1): system-wide virtual gamepad created")
         }
     }
 
     func controllerDisconnected(slot: Int) {
         queue.async { [weak self] in
+            self?.activeSlots.remove(slot)
             if self?.devices.removeValue(forKey: slot) != nil {
                 bridgeLog(.info, "virtualhid", "slot \(slot + 1): virtual gamepad removed")
             }
