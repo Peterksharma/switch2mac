@@ -23,7 +23,11 @@ fi
 DECODED=$(mktemp -t ftcw-profile)
 trap 'rm -f "$DECODED"' EXIT
 
-if ! security cms -D -i "$PROFILE" > "$DECODED" 2>/dev/null; then
+# Decoded with openssl rather than `security cms -D`: the latter imports the
+# profile's signer certificates into the login keychain as a side effect, and
+# a read-only check has no business writing to the keychain.
+if ! /usr/bin/openssl smime -verify -noverify -inform DER \
+        -in "$PROFILE" -out "$DECODED" 2>/dev/null; then
     echo "error: $PROFILE is not a readable provisioning profile" >&2
     exit 1
 fi
@@ -65,6 +69,7 @@ else:
     bad("missing %s" % HID,
         "Enable the HID Virtual Device capability on App ID %s, then "
         "regenerate the profile." % wanted.get("com.apple.application-identifier", "?"))
+    print("    profile carries: %s" % ", ".join(sorted(ent)))
 
 # 2. App ID and team must match what we sign with, or macOS kills the app.
 want_app = wanted.get("com.apple.application-identifier")
@@ -112,7 +117,7 @@ for der in profile.get("DeveloperCertificates", []):
     profile_hashes[hashlib.sha1(der).hexdigest().upper()] = der
 if not installed:
     print("  ? no code-signing identities in the keychain to compare against")
-elif profile_hashes & installed:
+elif set(profile_hashes) & installed:
     ok("built against a certificate present in this keychain")
 else:
     bad("none of the profile's certificates are in this keychain",
