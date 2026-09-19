@@ -105,13 +105,16 @@ SHA=$(shasum -a 256 "$ZIP" | awk '{print $1}')
 # appcast.json (a stable URL), while the zip URL below is version-pinned
 # so an appcast always references its own release's asset.
 DOWNLOAD_BASE="${DOWNLOAD_BASE:-https://github.com/Peterksharma/switch2mac/releases/download}"
+# RELEASE_NOTES is what existing users read in the update window, so set it
+# to something that says what changed; the fallback is deliberately dull.
+NOTES="${RELEASE_NOTES:-Version $VERSION.}"
 cat > build/appcast.json <<EOF
 {
   "version": "$VERSION",
   "build": $BUILD,
   "url": "$DOWNLOAD_BASE/v$VERSION/FinallyTheControllerWorks.zip",
   "sha256": "$SHA",
-  "notes": "Version $VERSION.",
+  "notes": $(/usr/bin/python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$NOTES"),
   "minimumSystemVersion": "15.0"
 }
 EOF
