@@ -39,6 +39,8 @@ the virtual pad.
 4. Grant Bluetooth permission when macOS asks. That's the only required
    permission; Notifications and Accessibility are optional extras.
 
+Requires macOS 15 (Sequoia) or later, on Apple Silicon.
+
 The app auto-updates from this repository's releases (every update is
 signature-verified before install).
 
