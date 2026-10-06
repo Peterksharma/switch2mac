@@ -6,7 +6,7 @@
 // fails and we say so once — the UDP/SDL path still works.
 //
 // Report layout (14 bytes, must match `gamepadDescriptor`):
-//   bytes 0-2: 19 buttons (bit i = button i in our fixed order) + 5 pad bits
+//   bytes 0-2: 21 buttons (bit i = button i in our fixed order) + 3 pad bits
 //   bytes 3-10: X, Y, Z, Rz as signed 16-bit LE (sticks)
 //   bytes 11-12: Rx, Ry as unsigned 8-bit (triggers)
 //   byte 13: hat switch in low nibble (0-7 clockwise from north, 8 = null)
@@ -14,6 +14,7 @@
 // Button order matches the SDL driver for consistency:
 //   0=B 1=A 2=Y 3=X 4=MINUS 5=HOME 6=PLUS 7=LSTICK 8=RSTICK 9=L 10=R
 //   11..14 unused here (d-pad goes to the hat) 15=CAPTURE 16=GR 17=GL 18=C
+//   19=ZR (the NSO GameCube pad's physical Z button) 20=ZL
 //
 // Rumble: generic HID gamepads have no standardized output-report rumble on
 // macOS, so this sink does not carry rumble; the UDP/SDL path does.
@@ -44,23 +45,23 @@ final class VirtualHIDSink: ControllerOutputSink, @unchecked Sendable {
     private static let maxAttempts = 4
     private static let retryDelay = DispatchTimeInterval.milliseconds(1500)
 
-    /// Generic gamepad: 19 buttons, two 16-bit stick pairs, two 8-bit
+    /// Generic gamepad: 21 buttons, two 16-bit stick pairs, two 8-bit
     /// triggers, one hat. Mirrors the probe descriptor that validated the
-    /// entitlement path, extended to 19 buttons.
+    /// entitlement path, extended to 21 buttons.
     private static let gamepadDescriptor = Data([
         0x05, 0x01,        // Usage Page (Generic Desktop)
         0x09, 0x05,        // Usage (Game Pad)
         0xA1, 0x01,        // Collection (Application)
         0x05, 0x09,        //   Usage Page (Button)
         0x19, 0x01,        //   Usage Minimum (1)
-        0x29, 0x13,        //   Usage Maximum (19)
+        0x29, 0x15,        //   Usage Maximum (21)
         0x15, 0x00,        //   Logical Minimum (0)
         0x25, 0x01,        //   Logical Maximum (1)
         0x75, 0x01,        //   Report Size (1)
-        0x95, 0x13,        //   Report Count (19)
+        0x95, 0x15,        //   Report Count (21)
         0x81, 0x02,        //   Input (Data,Var,Abs)
         0x75, 0x01,        //   Report Size (1) — pad to 24 bits
-        0x95, 0x05,        //   Report Count (5)
+        0x95, 0x03,        //   Report Count (3)
         0x81, 0x03,        //   Input (Const)
         0x05, 0x01,        //   Usage Page (Generic Desktop)
         0x09, 0x30,        //   Usage (X)
@@ -159,7 +160,12 @@ final class VirtualHIDSink: ControllerOutputSink, @unchecked Sendable {
     func controllerState(slot: Int, state: ControllerState) {
         queue.async { [weak self] in
             guard let self, let device = self.devices[slot] else { return }
-            let report = Self.report(from: state)
+            let report = VirtualHIDReport.encode(
+                buttons: state.buttons,
+                leftStick: state.leftStick,
+                rightStick: state.rightStick,
+                leftTrigger: state.leftTrigger,
+                rightTrigger: state.rightTrigger)
             Task {
                 try? await device.dispatchInputReport(data: report,
                                                       timestamp: SuspendingClock.now)
@@ -167,54 +173,6 @@ final class VirtualHIDSink: ControllerOutputSink, @unchecked Sendable {
         }
     }
 
-    // MARK: Report building
-
-    private static func report(from state: ControllerState) -> Data {
-        let b = state.buttons
-        var bits: UInt32 = 0
-        func set(_ index: Int, _ on: Bool) { if on { bits |= 1 << index } }
-        set(0, b.contains(.b)); set(1, b.contains(.a))
-        set(2, b.contains(.y)); set(3, b.contains(.x))
-        set(4, b.contains(.minus)); set(5, b.contains(.home)); set(6, b.contains(.plus))
-        set(7, b.contains(.lStick)); set(8, b.contains(.rStick))
-        set(9, b.contains(.l)); set(10, b.contains(.r))
-        set(15, b.contains(.capture)); set(16, b.contains(.gr))
-        set(17, b.contains(.gl)); set(18, b.contains(.c))
-
-        func axis(_ v: Double) -> Int16 {
-            Int16(max(-32768, min(32767, v * 32767)))
-        }
-
-        var d = Data(capacity: 14)
-        d.append(UInt8(bits & 0xFF))
-        d.append(UInt8((bits >> 8) & 0xFF))
-        d.append(UInt8((bits >> 16) & 0xFF))
-        for value in [axis(state.leftStick.x), axis(-state.leftStick.y),
-                      axis(state.rightStick.x), axis(-state.rightStick.y)] {
-            withUnsafeBytes(of: value.littleEndian) { d.append(contentsOf: $0) }
-        }
-        d.append(state.leftTrigger)
-        d.append(state.rightTrigger)
-        d.append(hatValue(b))
-        return d
-    }
-
-    /// Hat: 0=N 1=NE 2=E 3=SE 4=S 5=SW 6=W 7=NW, 8=released (null state).
-    private static func hatValue(_ b: Switch2.Buttons) -> UInt8 {
-        let up = b.contains(.dpadUp), down = b.contains(.dpadDown)
-        let left = b.contains(.dpadLeft), right = b.contains(.dpadRight)
-        switch (up, right, down, left) {
-        case (true, false, false, false): return 0
-        case (true, true, false, false): return 1
-        case (false, true, false, false): return 2
-        case (false, true, true, false): return 3
-        case (false, false, true, false): return 4
-        case (false, false, true, true): return 5
-        case (false, false, false, true): return 6
-        case (true, false, false, true): return 7
-        default: return 8
-        }
-    }
 }
 
 /// The controller has no meaningful get/set report handling on the virtual

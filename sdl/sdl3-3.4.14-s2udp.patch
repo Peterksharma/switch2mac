@@ -303,7 +303,7 @@ new file mode 100644
 index 0000000..5ba01a2
 --- /dev/null
 +++ b/src/joystick/darwin/SDL_s2udpjoystick.c
-@@ -0,0 +1,515 @@
+@@ -0,0 +1,519 @@
 +/*
 +  SDL_s2udpjoystick.c — joystick backend fed by the s2bridge UDP streams.
 +
@@ -336,7 +336,7 @@ index 0000000..5ba01a2
 +  Exposed layout per joystick (fixed):
 +    buttons: 0=B 1=A 2=Y 3=X 4=MINUS 5=HOME 6=PLUS 7=LSTICK 8=RSTICK
 +             9=L 10=R 11=DPAD_UP 12=DPAD_DOWN 13=DPAD_LEFT 14=DPAD_RIGHT
-+             15=CAPTURE 16=GR 17=GL 18=C
++             15=CAPTURE 16=GR 17=GL 18=C 19=ZR (GameCube Z) 20=ZL
 +    axes:    0=LX 1=LY 2=RX 3=RY 4=ZL 5=ZR  (Y inverted to SDL's
 +             down-positive convention; triggers span the full Sint16 range)
 +*/
@@ -369,6 +369,7 @@ index 0000000..5ba01a2
 +#define S2_BTN_B       0x00000004u
 +#define S2_BTN_A       0x00000008u
 +#define S2_BTN_R       0x00000040u
++#define S2_BTN_ZR      0x00000080u
 +#define S2_BTN_MINUS   0x00000100u
 +#define S2_BTN_PLUS    0x00000200u
 +#define S2_BTN_RSTICK  0x00000400u
@@ -381,6 +382,7 @@ index 0000000..5ba01a2
 +#define S2_BTN_RIGHT   0x00040000u
 +#define S2_BTN_LEFT    0x00080000u
 +#define S2_BTN_L       0x00400000u
++#define S2_BTN_ZL      0x00800000u
 +#define S2_BTN_GR      0x01000000u
 +#define S2_BTN_GL      0x02000000u
 +
@@ -654,7 +656,7 @@ index 0000000..5ba01a2
 +    if (!slot) {
 +        return SDL_SetError("S2UDP joystick %d not present", device_index);
 +    }
-+    joystick->nbuttons = 19;
++    joystick->nbuttons = 21;
 +    joystick->naxes = 6;
 +    joystick->nhats = 0;
 +    joystick->hwdata = (struct joystick_hwdata *)slot;
@@ -715,6 +717,8 @@ index 0000000..5ba01a2
 +        { 9, S2_BTN_L }, { 10, S2_BTN_R },
 +        { 11, S2_BTN_UP }, { 12, S2_BTN_DOWN }, { 13, S2_BTN_LEFT }, { 14, S2_BTN_RIGHT },
 +        { 15, S2_BTN_CAPTURE }, { 16, S2_BTN_GR }, { 17, S2_BTN_GL }, { 18, S2_BTN_C },
++        { 19, S2_BTN_ZR },
++        { 20, S2_BTN_ZL },
 +    };
 +    S2UDP_Slot *slot = (S2UDP_Slot *)joystick->hwdata;
 +    Uint64 timestamp = SDL_GetTicksNS();

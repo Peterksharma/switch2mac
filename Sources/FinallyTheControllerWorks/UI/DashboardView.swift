@@ -501,7 +501,8 @@ struct ControllerCard: View {
                             let map = settings.buttonMap(forSerial: status.serial)
                             ForEach(Switch2.namedButtons, id: \.name) { entry in
                                 HStack {
-                                    Text(entry.name)
+                                    Text(status.model == .nsoGameCube && entry.name == "ZR"
+                                         ? "Z" : entry.name)
                                         .frame(width: 130, alignment: .leading)
                                         .foregroundStyle(map[entry.name] != nil
                                                          ? Color.accentColor : .primary)
@@ -513,7 +514,8 @@ struct ControllerCard: View {
                                             physical: entry.name, output: $0,
                                             forSerial: status.serial) })) {
                                         ForEach(Switch2.namedButtons, id: \.name) { target in
-                                            Text(target.name).tag(target.name)
+                                            Text(status.model == .nsoGameCube && target.name == "ZR"
+                                                 ? "Z" : target.name).tag(target.name)
                                         }
                                     }
                                     .labelsHidden()
@@ -650,6 +652,7 @@ struct ControllerCard: View {
         switch status.model {
         case .joyCon2Left: return .joyConLeft
         case .joyCon2Right: return .joyConRight
+        case .nsoGameCube: return .gameCube
         default: return .pro
         }
     }

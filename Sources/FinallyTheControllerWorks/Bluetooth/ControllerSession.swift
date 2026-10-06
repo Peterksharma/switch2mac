@@ -604,8 +604,22 @@ final class ControllerSession: NSObject, @unchecked Sendable {
         // can never leave the motor running.
         if now - rumbleSetAt > 0.5 { strong = 0; weakMag = 0 }
 
-        if strong > 0.001 || weakMag > 0.001 || rumbleActive {
-            let active = strong > 0.001 || weakMag > 0.001
+        let active = strong > 0.001 || weakMag > 0.001
+        if model == .nsoGameCube {
+            // The GameCube pad has a preset motor, not the HD actuator used
+            // by Pro/Joy-Con. Writing its HD characteristic powers it off.
+            if active != rumbleActive, pendingCommand == nil {
+                rumbleActive = active
+                writeCommand(Switch2.Command.vibration,
+                             Switch2.Subcommand.vibrationPlayPreset,
+                             Data([active ? 1 : 0, 0, 0, 0])) { [weak self] response in
+                    // Retry a failed stop. Keep a sent start marked active so
+                    // the expiry path still sends a stop even without an ack.
+                    if !active && response == nil { self?.rumbleActive = true }
+                }
+            }
+            if active || rumbleActive { return }
+        } else if active || rumbleActive {
             writeMotor(Switch2.Vibration.waveform(strong: strong, weak: weakMag))
             rumbleActive = active
             return

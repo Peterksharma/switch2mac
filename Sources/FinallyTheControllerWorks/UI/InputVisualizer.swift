@@ -12,6 +12,7 @@ import SwiftUI
 
 enum VizLayout {
     case pro            // Pro Controller 2, or linked pair in the grip
+    case gameCube
     case joyConLeft
     case joyConRight
     case pairIndependent
@@ -25,6 +26,8 @@ struct InputVisualizer: View {
         switch layout {
         case .pro:
             proBody
+        case .gameCube:
+            gameCubeBody
         case .joyConLeft:
             JoyConLeftPanel(state: state)
         case .joyConRight:
@@ -69,6 +72,40 @@ struct InputVisualizer: View {
                 Chip("R", .r, state)
                 FaceDiamond(state: state)
                 StickDot(label: "R", stick: state?.rightStick,
+                         pressed: pressed(.rStick, state))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 4)
+    }
+
+    /// The GameCube pad has analog L/R triggers plus separate ZL/Z buttons.
+    private var gameCubeBody: some View {
+        HStack(alignment: .top, spacing: 18) {
+            VStack(spacing: 10) {
+                TriggerBar(label: "L", value: state?.leftTrigger ?? 0)
+                Chip("ZL", .zl, state)
+                Chip("L click", .l, state)
+                StickDot(label: "L", stick: state?.leftStick,
+                         pressed: pressed(.lStick, state))
+                DpadDiamond(state: state)
+            }
+            VStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    Chip("Cap", .capture, state)
+                    Chip("−", .minus, state)
+                    Chip("+", .plus, state)
+                    Chip("Home", .home, state)
+                }
+                Spacer().frame(height: 18)
+            }
+            .padding(.top, 26)
+            VStack(spacing: 10) {
+                TriggerBar(label: "R", value: state?.rightTrigger ?? 0)
+                Chip("Z", .zr, state)
+                Chip("R click", .r, state)
+                FaceDiamond(state: state)
+                StickDot(label: "C", stick: state?.rightStick,
                          pressed: pressed(.rStick, state))
             }
         }

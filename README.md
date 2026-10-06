@@ -50,12 +50,17 @@ Start the app, connect a controller, launch the game. It appears in the
 game's controller list like any USB pad — Gopher64, other emulators,
 Steam titles, anything that speaks HID.
 
+On the NSO GameCube controller, the physical Z and ZL buttons appear as
+separate gamepad buttons (buttons 20 and 21, or indices 19 and 20 in apps that
+number buttons from zero). The analog L/R triggers remain separate axes.
+
 Two things the virtual pad does not carry: rumble (generic HID gamepads
 have no standard rumble report on macOS) and motion. For those in an
 SDL-based program, launch it against the patched SDL build in
 [`sdl/`](sdl/), which reads the UDP feed and passes rumble back to the
 controller — see [`sdl/README.md`](sdl/README.md) for the one-line
-launch method.
+launch method. The GameCube pad uses a built-in on/off vibration preset;
+its rumble intensity cannot be varied like the Pro Controller 2's.
 
 ## Features
 
