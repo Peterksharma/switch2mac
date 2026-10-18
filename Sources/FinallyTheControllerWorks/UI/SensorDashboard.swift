@@ -48,7 +48,9 @@ struct SensorDashboard: View {
         return "\(s.batteryMillivolts),\(Int(s.temperatureC * 10)),\(s.batteryCurrent)"
     }
 
-    private var isCharging: Bool { (state?.batteryCurrent ?? 0) > 20 }
+    private var isCharging: Bool {
+        state?.powerInfo?.charging ?? ((state?.batteryCurrent ?? 0) > 20)
+    }
 
     private var chargeTitle: String { isCharging ? "Charging" : "Current" }
     private var chargeIcon: String { isCharging ? "battery.100.bolt" : "minus.plus.batteryblock" }
@@ -83,7 +85,7 @@ final class SensorHistory: ObservableObject {
 
         if firstSample == nil { firstSample = (now, mv) }
         estimateRuntime(now: now, current: mv,
-                        charging: state.batteryCurrent > 20)
+                        charging: state.powerInfo?.charging ?? (state.batteryCurrent > 20))
     }
 
     private func estimateRuntime(now: Date, current mv: Double, charging: Bool) {

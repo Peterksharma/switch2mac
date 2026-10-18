@@ -57,6 +57,9 @@ enum Switch2 {
         static let vibrationPro = UUID(uuidString: "CC483F51-9258-427D-A939-630C31F72B05")!
         static let vibrationJoyConR = UUID(uuidString: "FA19B0FB-CD1F-46A7-84A1-BBB09E00C149")!
         static let vibrationJoyConL = UUID(uuidString: "289326CB-A471-485D-A8F4-240C14F18241")!
+        /// Pro Controller 2's model-specific input report (0x09). Only its
+        /// Power Info byte is used; subscribing suspends `inputReport`.
+        static let powerReportPro = UUID(uuidString: "7492866C-EC3E-4619-8258-32755FFCC0F8")!
 
         static func vibration(for model: Model) -> UUID {
             switch model {
@@ -231,6 +234,33 @@ enum Switch2 {
         var buf = Data([length, 0x7E, 0x00, 0x00])
         withUnsafeBytes(of: address.littleEndian) { buf.append(contentsOf: $0) }
         return buf
+    }
+
+    // MARK: - Power info
+
+    /// Power Info byte (offset 1 of the model-specific input report): the
+    /// firmware's own battery estimate, the one the console displays.
+    /// Bits: [0] external power, [1] charging, [2:5] level.
+    struct PowerInfo: Sendable, Equatable {
+        let raw: UInt8
+        let externalPower: Bool
+        let charging: Bool
+        /// ndeadly documents 0-9; a fully charged Pro Controller 2 reports 8,
+        /// unplugged or on the charger.
+        let level: UInt8
+
+        static let fullLevel: UInt8 = 8
+
+        init(_ byte: UInt8) {
+            raw = byte
+            externalPower = byte & 0x01 != 0
+            charging = byte & 0x02 != 0
+            level = (byte >> 2) & 0x0F
+        }
+
+        var percent: Int {
+            min(100, Int(level) * 100 / Int(Self.fullLevel))
+        }
     }
 
     // MARK: - Advertisement parsing

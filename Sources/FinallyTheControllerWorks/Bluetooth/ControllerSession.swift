@@ -40,6 +40,8 @@ struct ControllerState: Sendable {
     var chargeState: UInt8 = 0
     var batteryCurrent: Int16 = 0
     var temperatureC: Double = 0
+    /// Firmware battery estimate (Pro Controller 2), nil until sampled.
+    var powerInfo: Switch2.PowerInfo?
 }
 
 /// Called on the Bluetooth queue.
@@ -88,6 +90,15 @@ final class ControllerSession: NSObject, @unchecked Sendable {
     private(set) var reportCount: UInt64 = 0
     private var lastReportAt: TimeInterval = 0
     private var gapCount = 0
+
+    /// Firmware battery estimate, sampled from the model-specific report.
+    private(set) var powerInfo: Switch2.PowerInfo?
+    private var powerSampleCompletion: ((Bool) -> Void)?
+    private var powerSampleTimeout: DispatchWorkItem?
+    private var lastPowerSampleAt: TimeInterval = 0
+    /// Sampling pauses input ~150 ms, so refresh rarely and only when idle.
+    private static let powerSampleInterval: TimeInterval = 900
+    private static let powerSampleIdle: TimeInterval = 5
 
     /// Last time the HUMAN did something (button/stick/trigger change) —
     /// reports stream constantly, so idleness must be judged on content.
@@ -157,6 +168,7 @@ final class ControllerSession: NSObject, @unchecked Sendable {
             ("player LEDs", { [weak self] done in self?.stepPlayerLEDs(done) }),
             ("enable features", { [weak self] done in self?.stepFeatures(done) }),
             ("bond", { [weak self] done in self?.stepBond(done) }),
+            ("battery level", { [weak self] done in self?.stepPowerInfo(done) }),
             ("input notifications", { [weak self] done in self?.stepInputNotify(done) }),
         ]
         advanceHandshake()
@@ -259,6 +271,53 @@ final class ControllerSession: NSObject, @unchecked Sendable {
                 }
             }
         }
+    }
+
+    private func stepPowerInfo(_ done: @escaping (Bool) -> Void) {
+        // Best-effort: without it the UI falls back to the voltage estimate.
+        samplePowerInfo { _ in done(true) }
+    }
+
+    /// Report 0x05's voltage field is no state-of-charge signal on Pro
+    /// Controller 2 (a full pad reads ~3.68 V), but its report 0x09 carries
+    /// the firmware's own estimate. Subscribing to 0x09 suspends 0x05, so
+    /// take one packet and unsubscribe.
+    private func samplePowerInfo(_ done: @escaping (Bool) -> Void) {
+        guard powerSampleCompletion == nil else { done(false); return }
+        lastPowerSampleAt = CFAbsoluteTimeGetCurrent()
+        guard model == .proController2,
+              let ch = chars[Switch2.GATT.powerReportPro] else {
+            done(false); return
+        }
+        powerSampleCompletion = done
+        let timeout = DispatchWorkItem { [weak self] in self?.finishPowerSample(nil) }
+        powerSampleTimeout = timeout
+        queue.asyncAfter(deadline: .now() + 1.0, execute: timeout)
+        peripheral.setNotifyValue(true, for: ch)
+    }
+
+    private func finishPowerSample(_ data: Data?) {
+        guard let done = powerSampleCompletion else { return }
+        powerSampleCompletion = nil
+        powerSampleTimeout?.cancel()
+        powerSampleTimeout = nil
+        if !promiscuousNotify, let ch = chars[Switch2.GATT.powerReportPro] {
+            peripheral.setNotifyValue(false, for: ch)
+        }
+        guard let data, data.count > 1 else {
+            log(.debug, "slot \(slot + 1): no battery level reading")
+            done(false)
+            return
+        }
+        let info = Switch2.PowerInfo(data[data.startIndex + 1])
+        log(.debug, "slot \(slot + 1): battery sample \(String(format: "%#04x", info.raw))")
+        if info != powerInfo {
+            log(.info, "slot \(slot + 1): battery level \(info.level) (\(info.percent)%)"
+                + (info.externalPower ? ", external power" : "")
+                + (info.charging ? ", charging" : ""))
+        }
+        powerInfo = info
+        done(true)
     }
 
     private func stepInputNotify(_ done: @escaping (Bool) -> Void) {
@@ -610,6 +669,10 @@ final class ControllerSession: NSObject, @unchecked Sendable {
             rumbleActive = active
             return
         }
+        if now - lastPowerSampleAt >= Self.powerSampleInterval,
+           now - lastActivityAt >= Self.powerSampleIdle {
+            samplePowerInfo { _ in }
+        }
         // Idle: the 1 Hz keep-alive that stops macOS terminating the link.
         if now - lastWriteAt >= 1.0, pendingCommand == nil {
             setPlayerLEDs()
@@ -668,6 +731,7 @@ final class ControllerSession: NSObject, @unchecked Sendable {
         s.chargeState = report.chargeState
         s.batteryCurrent = report.batteryCurrent
         s.temperatureC = 25.0 + Double(report.temperatureRaw) / 127.0
+        s.powerInfo = powerInfo
 
         // Activity: any button change, meaningful stick deflection change,
         // or trigger change counts. (Gyro noise deliberately excluded.)
@@ -767,6 +831,8 @@ extension ControllerSession: CBPeripheralDelegate {
             handleInputReport(data)
         } else if uuid == Switch2.GATT.commandResponse {
             handleCommandResponse(data)
+        } else if uuid == Switch2.GATT.powerReportPro, powerSampleCompletion != nil {
+            finishPowerSample(data)
         } else if uuid == Self.audioInputUUID {
             onAudioPacket?(data)
         } else if promiscuousNotify {

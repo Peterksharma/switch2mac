@@ -166,8 +166,8 @@ After this the controller streams input reports as notifications.
 | `0x14` | 2 (LE) | mouse surface quality ("roughness") |
 | `0x16` | 2 (LE) | mouse lift distance (0 = no surface) |
 | `0x19` | 6 | magnetometer X/Y/Z (3× i16 LE) |
-| `0x1F` | 2 (LE) | battery voltage (mV) |
-| `0x21` | 1 | charge state |
+| `0x1F` | 2 (LE) | battery voltage (mV) — see §5.2 |
+| `0x21` | 1 | charge state (`0x00` on battery, Pro Controller 2) |
 | `0x22` | 2 (LE, signed) | battery current (+ = charging; feature `0x20`) |
 | `0x2E` | 2 (signed) | IMU die temperature (raw) |
 | `0x30` | 6 | accelerometer X/Y/Z (3× i16 LE) |
@@ -198,6 +198,25 @@ calibrate with a figure-8 min/max per device).
 
 ZL/ZR are digital bits on every model except the NSO GameCube pad, which
 reports true analog triggers at `0x3C`/`0x3D`.
+
+### 5.2 Battery level (Pro Controller 2)
+
+The voltage field is not a usable charge estimate on Pro Controller 2: a
+fully charged pad reads ~3.68 V on battery and ~3.70 V on the charger, so a
+3.30–4.15 V linear map shows ~44% when the console shows full.
+
+The firmware's own estimate is the Power Info byte at offset 1 of report
+`0x09` (characteristic `7492866C-EC3E-4619-8258-32755FFCC0F8`):
+bit 0 external power, bit 1 charging, bits 2–5 level. Observed on a full
+pad: `0x20` unplugged (level 8), `0x23` on the charger (level 8, external
+power, charging).
+
+Constraints (measured on macOS): the characteristic is notify-only (a read
+returns *Read Not Permitted*), and subscribing to it suspends the `0x05`
+stream until it is unsubscribed. A one-packet subscribe/unsubscribe takes
+~140 ms and pauses `0x05` for ≤ ~150 ms, about the size of ordinary BLE
+gaps. The app samples it once during the handshake and then every 15 minutes
+while the controller is idle.
 
 ---
 

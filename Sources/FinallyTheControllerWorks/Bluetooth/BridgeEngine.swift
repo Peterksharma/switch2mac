@@ -26,9 +26,12 @@ struct ControllerStatus: Identifiable, Sendable {
     let connectedAt: Date
     var model: Switch2.Model = .proController2
     var isJoyConPair: Bool = false
+    var powerInfo: Switch2.PowerInfo?
 
-    /// Rough Li-ion percentage from voltage (3.30 V empty, 4.15 V full).
+    /// The firmware's estimate when available (Pro Controller 2), else a
+    /// rough Li-ion percentage from voltage (3.30 V empty, 4.15 V full).
     var batteryPercent: Int {
+        if let powerInfo { return powerInfo.percent }
         guard batteryMillivolts > 0 else { return 0 }
         let pct = (Double(batteryMillivolts) - 3300) / (4150 - 3300) * 100
         return min(100, max(0, Int(pct)))
@@ -1400,7 +1403,7 @@ final class BridgeEngine: NSObject, ObservableObject, @unchecked Sendable {
                     serial: first.serialNumber,
                     batteryMillivolts: first.batteryMillivolts,
                     connectedAt: connectedAt[logical.slots[0]] ?? Date(),
-                    model: first.model))
+                    model: first.model, powerInfo: first.powerInfo))
             }
         }
         // Sessions with no player slot (beyond maxPlayers): still listed.
@@ -1411,7 +1414,7 @@ final class BridgeEngine: NSObject, ObservableObject, @unchecked Sendable {
                 serial: session.serialNumber,
                 batteryMillivolts: session.batteryMillivolts,
                 connectedAt: connectedAt[slot] ?? Date(),
-                model: session.model))
+                model: session.model, powerInfo: session.powerInfo))
         }
         snapshot.sort { $0.id < $1.id }
         DispatchQueue.main.async { [weak self] in
