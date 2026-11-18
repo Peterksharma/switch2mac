@@ -20,13 +20,23 @@
 
 import Foundation
 import CoreHID
+import os
 
 final class VirtualHIDSink: ControllerOutputSink, @unchecked Sendable {
 
     var onRumble: ((Int, Double, Double) -> Void)?
 
+    private final class SlotEntry {
+        var lastReport = Data()
+        let continuation: AsyncStream<Data>.Continuation
+        init(continuation: AsyncStream<Data>.Continuation) {
+            self.continuation = continuation
+        }
+    }
+
     private let queue = DispatchQueue(label: "com.petersharma.ftcw.virtualhid")
     private var devices: [Int: HIDVirtualDevice] = [:]
+    private let slotEntriesLock = OSAllocatedUnfairLock<[Int: SlotEntry]>(initialState: [:])
 
     /// Slots with a live controller, so a retry never publishes a gamepad for
     /// a controller that walked away in the meantime.
@@ -137,14 +147,22 @@ final class VirtualHIDSink: ControllerOutputSink, @unchecked Sendable {
             return
         }
         devices[slot] = device
+        let (stream, continuation) = AsyncStream<Data>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        slotEntriesLock.withLock { $0[slot] = SlotEntry(continuation: continuation) }
         Task {
             await device.activate(delegate: NullHIDDelegate.shared)
             bridgeLog(.info, "virtualhid",
                       "slot \(slot + 1): system-wide virtual gamepad created")
+            for await report in stream {
+                try? await device.dispatchInputReport(data: report,
+                                                      timestamp: SuspendingClock.now)
+            }
         }
     }
 
     func controllerDisconnected(slot: Int) {
+        let removed = slotEntriesLock.withLock { $0.removeValue(forKey: slot) }
+        removed?.continuation.finish()
         queue.async { [weak self] in
             self?.activeSlots.remove(slot)
             if self?.devices.removeValue(forKey: slot) != nil {
@@ -157,14 +175,16 @@ final class VirtualHIDSink: ControllerOutputSink, @unchecked Sendable {
     func controllerName(slot: Int, name: String) {}
 
     func controllerState(slot: Int, state: ControllerState) {
-        queue.async { [weak self] in
-            guard let self, let device = self.devices[slot] else { return }
-            let report = Self.report(from: state)
-            Task {
-                try? await device.dispatchInputReport(data: report,
-                                                      timestamp: SuspendingClock.now)
-            }
+        let hasSlot = slotEntriesLock.withLock { $0[slot] != nil }
+        guard hasSlot else { return }
+
+        let report = Self.report(from: state)
+        let continuation = slotEntriesLock.withLock { entries -> AsyncStream<Data>.Continuation? in
+            guard let entry = entries[slot], entry.lastReport != report else { return nil }
+            entry.lastReport = report
+            return entry.continuation
         }
+        continuation?.yield(report)
     }
 
     // MARK: Report building

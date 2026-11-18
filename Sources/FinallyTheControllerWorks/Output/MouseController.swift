@@ -17,6 +17,7 @@
 import Foundation
 import CoreGraphics
 import AppKit
+import os
 
 final class MouseController: @unchecked Sendable {
 
@@ -33,6 +34,20 @@ final class MouseController: @unchecked Sendable {
     private var units: [String: UnitState] = [:]
     private var permissionChecked = false
     private var permissionGranted = false
+    private let displayBoundsLock = OSAllocatedUnfairLock<CGRect>(initialState: .null)
+
+    init() {
+        let refreshBounds = { [weak self] in
+            let union = NSScreen.screens.reduce(CGRect.null) { $0.union($1.frame) }
+            self?.displayBoundsLock.withLock { $0 = union }
+        }
+        DispatchQueue.main.async { refreshBounds() }
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main) { _ in
+            refreshBounds()
+        }
+    }
 
     /// Wrapping signed difference of two mod-2^16 counters.
     private static func wrapDiff(_ current: UInt16, _ previous: UInt16) -> Int {
@@ -47,10 +62,9 @@ final class MouseController: @unchecked Sendable {
 
     func handle(serial: String, model: Switch2.Model, state: ControllerState) {
         guard model == .joyCon2Left || model == .joyCon2Right else { return }
-        let settings = UserDefaults.standard.dictionary(forKey: "controllerSettings")
-        let entry = settings?[serial] as? [String: Any]
-        guard entry?["mouseEnabled"] as? Bool ?? false else {
-            units.removeValue(forKey: serial)
+        guard let config = ControllerSettings.configSnapshot(forSerial: serial),
+              config.mouseEnabled else {
+            if units[serial] != nil { units.removeValue(forKey: serial) }
             return
         }
         guard ensurePermission() else { return }
@@ -80,7 +94,7 @@ final class MouseController: @unchecked Sendable {
 
         guard Self.isTracking(state), dxRaw != 0 || dyRaw != 0 else { return }
 
-        let sensitivity = entry?["mouseSensitivity"] as? Double ?? 1.0
+        let sensitivity = config.mouseSensitivity
         let scale = 0.35 * sensitivity   // counts → points; tuned live
         var dx = Double(dxRaw) * scale + unit.residualX
         var dy = Double(dyRaw) * scale + unit.residualY
@@ -101,7 +115,7 @@ final class MouseController: @unchecked Sendable {
         let current = CGEvent(source: nil)?.location ?? .zero
         var target = CGPoint(x: current.x + dx, y: current.y + dy)
         // Clamp to the union of displays so the cursor never vanishes.
-        let bounds = NSScreen.screens.reduce(CGRect.null) { $0.union($1.frame) }
+        let bounds = displayBoundsLock.withLock { $0 }
         if !bounds.isNull {
             // NSScreen frames are bottom-left origin; CGEvent is top-left.
             let maxY = bounds.height

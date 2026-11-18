@@ -5,6 +5,35 @@
 
 import Foundation
 import Combine
+import os
+
+/// Pre-parsed, thread-safe snapshot of one controller's settings for the
+/// ~66 Hz Bluetooth hot path (avoids UserDefaults dictionary bridging and
+/// string lookups per input report).
+struct ControllerConfigSnapshot: Sendable {
+    struct KeyMap: Sendable {
+        var entries: [(button: Switch2.Buttons, spec: KeySpec)] = []
+        var mask: Switch2.Buttons = []
+    }
+
+    var name: String = ""
+    var rumble: Double = 1.0
+    var deadzone: Double = 0.0
+    var stickCenterL: (Double, Double)?
+    var stickCenterR: (Double, Double)?
+    var triggerThreshold: Double = 0.0
+    var invertLX: Bool = false
+    var invertLY: Bool = false
+    var invertRX: Bool = false
+    var invertRY: Bool = false
+    var ledPattern: Int = 0
+    var captureScreenshot: Bool = false
+    var mouseEnabled: Bool = false
+    var mouseSensitivity: Double = 1.0
+    var buttonRemap: [(from: Switch2.Buttons, to: Switch2.Buttons)] = []
+    var globalKeyMap = KeyMap()
+    var appKeyMaps: [String: KeyMap] = [:]
+}
 
 final class ControllerSettings: ObservableObject {
     static let shared = ControllerSettings()
@@ -17,21 +46,103 @@ final class ControllerSettings: ObservableObject {
 
     /// serial -> {"name": String, "rumble": Double}
     @Published private var store: [String: [String: Any]]
+    private let snapshotLock = OSAllocatedUnfairLock<[String: ControllerConfigSnapshot]>(initialState: [:])
 
     private init() {
         store = UserDefaults.standard.dictionary(forKey: Self.defaultsKey)
             as? [String: [String: Any]] ?? [:]
+        rebuildCache()
+    }
+
+    /// Thread-safe read of the pre-parsed configuration for `serial`.
+    static func configSnapshot(forSerial serial: String) -> ControllerConfigSnapshot? {
+        shared.snapshotLock.withLock { $0[serial] }
     }
 
     private func persist() {
         UserDefaults.standard.set(store, forKey: Self.defaultsKey)
+        rebuildCache()
     }
 
     /// Re-read from UserDefaults (after an import overwrote the store).
     func reload() {
         store = UserDefaults.standard.dictionary(forKey: Self.defaultsKey)
             as? [String: [String: Any]] ?? [:]
+        rebuildCache()
         objectWillChange.send()
+    }
+
+    private func rebuildCache() {
+        var next: [String: ControllerConfigSnapshot] = [:]
+        next.reserveCapacity(store.count)
+        for (serial, entry) in store {
+            next[serial] = Self.parseSnapshot(entry)
+        }
+        let snapshot = next
+        snapshotLock.withLock { $0 = snapshot }
+    }
+
+    private static func parseSnapshot(_ entry: [String: Any]) -> ControllerConfigSnapshot {
+        var s = ControllerConfigSnapshot()
+        s.name = entry["name"] as? String ?? ""
+        s.rumble = entry["rumble"] as? Double ?? 1.0
+        s.deadzone = entry["deadzone"] as? Double ?? 0.0
+        if let cl = entry["stickCenterL"] as? [Double], cl.count == 2 {
+            s.stickCenterL = (cl[0], cl[1])
+        }
+        if let cr = entry["stickCenterR"] as? [Double], cr.count == 2 {
+            s.stickCenterR = (cr[0], cr[1])
+        }
+        s.triggerThreshold = entry["triggerThreshold"] as? Double ?? 0.0
+        s.invertLX = entry["invertLX"] as? Bool ?? false
+        s.invertLY = entry["invertLY"] as? Bool ?? false
+        s.invertRX = entry["invertRX"] as? Bool ?? false
+        s.invertRY = entry["invertRY"] as? Bool ?? false
+        s.ledPattern = entry["ledPattern"] as? Int ?? 0
+        s.captureScreenshot = entry["captureScreenshot"] as? Bool ?? false
+        s.mouseEnabled = entry["mouseEnabled"] as? Bool ?? false
+        s.mouseSensitivity = entry["mouseSensitivity"] as? Double ?? 1.0
+
+        if let map = entry["buttonMap"] as? [String: String], !map.isEmpty {
+            var pairs: [(from: Switch2.Buttons, to: Switch2.Buttons)] = []
+            pairs.reserveCapacity(Switch2.namedButtons.count)
+            for (name, button) in Switch2.namedButtons {
+                let targetName = map[name] ?? name
+                if let target = Switch2.button(named: targetName) {
+                    pairs.append((from: button, to: target))
+                }
+            }
+            s.buttonRemap = pairs
+        }
+
+        func parseKeyMap(_ raw: Any?) -> ControllerConfigSnapshot.KeyMap {
+            guard let dict = raw as? [String: [String: Any]], !dict.isEmpty else {
+                return ControllerConfigSnapshot.KeyMap()
+            }
+            var km = ControllerConfigSnapshot.KeyMap()
+            km.entries.reserveCapacity(dict.count)
+            for (name, specDict) in dict {
+                if let button = Switch2.button(named: name),
+                   let spec = KeySpec(dictionary: specDict) {
+                    km.entries.append((button: button, spec: spec))
+                    km.mask.insert(button)
+                }
+            }
+            return km
+        }
+
+        s.globalKeyMap = parseKeyMap(entry["keyMap"])
+        if let byApp = entry["keyMapByApp"] as? [String: [String: [String: Any]]] {
+            var parsedApps: [String: ControllerConfigSnapshot.KeyMap] = [:]
+            for (bundleID, rawMap) in byApp {
+                let km = parseKeyMap(rawMap)
+                if !km.entries.isEmpty {
+                    parsedApps[bundleID] = km
+                }
+            }
+            s.appKeyMaps = parsedApps
+        }
+        return s
     }
 
     /// Forget everything stored about a controller (name, mappings, axis
