@@ -12,6 +12,7 @@
 
 import Foundation
 import Darwin
+import os
 
 final class UDPHub: ControllerOutputSink, @unchecked Sendable {
 
@@ -26,6 +27,12 @@ final class UDPHub: ControllerOutputSink, @unchecked Sendable {
         var seq: UInt32 = 0
         var name: String = ""
         var readSource: DispatchSourceRead?
+        /// Reusable 44-byte state packet buffer ("S2B1" header prefilled).
+        var stateBuf: [UInt8] = {
+            var b = [UInt8](repeating: 0, count: 44)
+            b[0] = 0x53; b[1] = 0x32; b[2] = 0x42; b[3] = 0x31
+            return b
+        }()
         init(fd: Int32) { self.fd = fd }
     }
 
@@ -37,6 +44,8 @@ final class UDPHub: ControllerOutputSink, @unchecked Sendable {
 
     private var slots: [Int: SlotSocket] = [:]
     private let queue = DispatchQueue(label: "com.petersharma.ftcw.udphub")
+    /// Bitmask of slots with ≥1 active peer, so controllerState skips queue hops when idle.
+    private let activePeerMask = OSAllocatedUnfairLock<UInt8>(initialState: 0)
 
     init() {
         queue.async { [weak self] in self?.openSockets() }
@@ -105,9 +114,12 @@ final class UDPHub: ControllerOutputSink, @unchecked Sendable {
             let peer = SockAddr(addr: from.sin_addr.s_addr, port: from.sin_port)
             let isNewPeer = s.peers[peer] == nil
             s.peers[peer] = CFAbsoluteTimeGetCurrent()
-            if isNewPeer, !s.name.isEmpty {
-                // Late joiners get the name before their first state packet.
-                send(Self.namePacket(s.name), to: peer, via: s.fd)
+            if isNewPeer {
+                activePeerMask.withLock { $0 |= (1 << slot) }
+                if !s.name.isEmpty {
+                    // Late joiners get the name before their first state packet.
+                    send(Self.namePacket(s.name), to: peer, via: s.fd)
+                }
             }
             if n >= 6, buf[0] == 0x53, buf[1] == 0x32, buf[2] == 0x52, buf[3] == 0x31 {  // "S2R1"
                 onRumble?(slot, Double(buf[4]) / 255.0, Double(buf[5]) / 255.0)
@@ -159,10 +171,14 @@ final class UDPHub: ControllerOutputSink, @unchecked Sendable {
     }
 
     func controllerState(slot: Int, state: ControllerState) {
+        guard slot >= 0, slot < 8 else { return }
+        let hasPeers = activePeerMask.withLock { ($0 & (1 << slot)) != 0 }
+        guard hasPeers else { return }
+
         queue.async { [weak self] in
             guard let self, let s = self.slots[slot], !s.peers.isEmpty else { return }
             s.seq &+= 1
-            let packet = Self.statePacket(seq: s.seq, state: state)
+            Self.fillStatePacket(&s.stateBuf, seq: s.seq, state: state)
             let now = CFAbsoluteTimeGetCurrent()
             for (peer, seen) in s.peers {
                 if now - seen > Self.peerTTL {
@@ -173,7 +189,7 @@ final class UDPHub: ControllerOutputSink, @unchecked Sendable {
                 dest.sin_family = sa_family_t(AF_INET)
                 dest.sin_port = peer.port
                 dest.sin_addr.s_addr = peer.addr
-                _ = packet.withUnsafeBytes { bytes in
+                _ = s.stateBuf.withUnsafeBytes { bytes in
                     withUnsafePointer(to: &dest) {
                         $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { destPtr in
                             sendto(s.fd, bytes.baseAddress, bytes.count, 0,
@@ -182,31 +198,34 @@ final class UDPHub: ControllerOutputSink, @unchecked Sendable {
                     }
                 }
             }
+            if s.peers.isEmpty {
+                self.activePeerMask.withLock { $0 &= ~(1 << slot) }
+            }
         }
     }
 
-    private static func statePacket(seq: UInt32, state: ControllerState) -> Data {
-        var d = Data(capacity: 44)
-        d.append(contentsOf: [0x53, 0x32, 0x42, 0x31])  // "S2B1"
-        append(&d, seq.littleEndian)
-        append(&d, state.buttons.rawValue.littleEndian)
-        append(&d, Float(state.leftStick.x).bitPattern.littleEndian)
-        append(&d, Float(state.leftStick.y).bitPattern.littleEndian)
-        append(&d, Float(state.rightStick.x).bitPattern.littleEndian)
-        append(&d, Float(state.rightStick.y).bitPattern.littleEndian)
-        d.append(state.leftTrigger)
-        d.append(state.rightTrigger)
-        append(&d, state.batteryMillivolts.littleEndian)
-        append(&d, UInt16(bitPattern: state.gyro.0).littleEndian)
-        append(&d, UInt16(bitPattern: state.gyro.1).littleEndian)
-        append(&d, UInt16(bitPattern: state.gyro.2).littleEndian)
-        append(&d, UInt16(bitPattern: state.accel.0).littleEndian)
-        append(&d, UInt16(bitPattern: state.accel.1).littleEndian)
-        append(&d, UInt16(bitPattern: state.accel.2).littleEndian)
-        return d
+    private static func fillStatePacket(_ buf: inout [UInt8], seq: UInt32, state: ControllerState) {
+        write(&buf, at: 4, seq.littleEndian)
+        write(&buf, at: 8, state.buttons.rawValue.littleEndian)
+        write(&buf, at: 12, Float(state.leftStick.x).bitPattern.littleEndian)
+        write(&buf, at: 16, Float(state.leftStick.y).bitPattern.littleEndian)
+        write(&buf, at: 20, Float(state.rightStick.x).bitPattern.littleEndian)
+        write(&buf, at: 24, Float(state.rightStick.y).bitPattern.littleEndian)
+        buf[28] = state.leftTrigger
+        buf[29] = state.rightTrigger
+        write(&buf, at: 30, state.batteryMillivolts.littleEndian)
+        write(&buf, at: 32, UInt16(bitPattern: state.gyro.0).littleEndian)
+        write(&buf, at: 34, UInt16(bitPattern: state.gyro.1).littleEndian)
+        write(&buf, at: 36, UInt16(bitPattern: state.gyro.2).littleEndian)
+        write(&buf, at: 38, UInt16(bitPattern: state.accel.0).littleEndian)
+        write(&buf, at: 40, UInt16(bitPattern: state.accel.1).littleEndian)
+        write(&buf, at: 42, UInt16(bitPattern: state.accel.2).littleEndian)
     }
 
-    private static func append<T: FixedWidthInteger>(_ data: inout Data, _ value: T) {
-        withUnsafeBytes(of: value) { data.append(contentsOf: $0) }
+    private static func write<T: FixedWidthInteger>(_ buf: inout [UInt8], at offset: Int, _ value: T) {
+        var v = value
+        withUnsafeBytes(of: &v) { src in
+            for i in 0..<src.count { buf[offset + i] = src[i] }
+        }
     }
 }

@@ -67,6 +67,12 @@ final class ControllerSession: NSObject, @unchecked Sendable {
     private var rightCal: Switch2.StickCalibration?
 
     private var chars: [UUID: CBCharacteristic] = [:]
+    private var inputReportChar: CBCharacteristic?
+    private var commandWriteChar: CBCharacteristic?
+    private var commandResponseChar: CBCharacteristic?
+    private var audioInputChar: CBCharacteristic?
+    private var audioOutputChar: CBCharacteristic?
+    private var vibrationChar: CBCharacteristic?
     private var handshakeStarted = false
     private var pendingCommand: (id: UInt8, completion: (Data?) -> Void)?
     private var commandTimeout: DispatchWorkItem?
@@ -76,6 +82,7 @@ final class ControllerSession: NSObject, @unchecked Sendable {
     /// logical players shuffle (e.g. Joy-Cons link into a grip).
     private(set) var playerNumber: Int
     private var keepAliveTimer: DispatchSourceTimer?
+    private var isFastRumbleCadence = false
     private var lastWriteAt: TimeInterval = 0
     private var vibrationPacketID: UInt8 = 0
     private var rumbleTarget: (strong: Double, weak: Double) = (0, 0)
@@ -88,6 +95,8 @@ final class ControllerSession: NSObject, @unchecked Sendable {
     private(set) var reportCount: UInt64 = 0
     private var lastReportAt: TimeInterval = 0
     private var gapCount = 0
+    private var lastPublishedBatteryPct: Int = -1
+    private var lastPublishedHasMV = false
 
     /// Last time the HUMAN did something (button/stick/trigger change) —
     /// reports stream constantly, so idleness must be judged on content.
@@ -332,14 +341,10 @@ final class ControllerSession: NSObject, @unchecked Sendable {
 
     private func setPlayerLEDs(_ completion: @escaping (Bool) -> Void = { _ in }) {
         // A user-set custom LED pattern (per serial) overrides the player LEDs.
-        let custom = UserDefaults.standard
-            .dictionary(forKey: "controllerSettings")?[serialNumber] as? [String: Any]
-        let pattern: UInt8
-        if let raw = custom?["ledPattern"] as? Int, raw > 0 {
-            pattern = UInt8(raw & 0x0F)
-        } else {
-            pattern = Switch2.ledPatterns[min(max(playerNumber - 1, 0), 7)]
-        }
+        let raw = ControllerSettings.configSnapshot(forSerial: serialNumber)?.ledPattern ?? 0
+        let pattern: UInt8 = raw > 0
+            ? UInt8(raw & 0x0F)
+            : Switch2.ledPatterns[min(max(playerNumber - 1, 0), 7)]
         writeCommand(Switch2.Command.leds, Switch2.Subcommand.ledsSetPlayer,
                      Data([pattern, 0, 0, 0])) { resp in
             completion(resp != nil)
@@ -579,19 +584,27 @@ final class ControllerSession: NSObject, @unchecked Sendable {
         }
     }
 
-    // MARK: - Keep-alive + rumble (shared 50 ms cadence)
+    // MARK: - Keep-alive + rumble (1 Hz idle; 50 ms while rumbling)
 
     func setRumble(strong: Double, weak: Double) {
         queue.async { [weak self] in
             guard let self else { return }
             self.rumbleTarget = (strong, weak)
             self.rumbleSetAt = CFAbsoluteTimeGetCurrent()
+            if (strong > 0.001 || weak > 0.001), !self.isFastRumbleCadence {
+                self.isFastRumbleCadence = true
+                self.keepAliveTimer?.schedule(deadline: .now(),
+                                              repeating: .milliseconds(50),
+                                              leeway: .milliseconds(5))
+            }
         }
     }
 
     private func startKeepAlive() {
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + 0.05, repeating: 0.05)
+        isFastRumbleCadence = false
+        timer.schedule(deadline: .now() + 1.0, repeating: .seconds(1),
+                       leeway: .milliseconds(100))
         timer.setEventHandler { [weak self] in self?.maintainTick() }
         timer.resume()
         keepAliveTimer = timer
@@ -608,7 +621,19 @@ final class ControllerSession: NSObject, @unchecked Sendable {
             let active = strong > 0.001 || weakMag > 0.001
             writeMotor(Switch2.Vibration.waveform(strong: strong, weak: weakMag))
             rumbleActive = active
+            if !active, isFastRumbleCadence {
+                isFastRumbleCadence = false
+                keepAliveTimer?.schedule(deadline: .now() + 1.0,
+                                         repeating: .seconds(1),
+                                         leeway: .milliseconds(100))
+            }
             return
+        }
+        if isFastRumbleCadence {
+            isFastRumbleCadence = false
+            keepAliveTimer?.schedule(deadline: .now() + 1.0,
+                                     repeating: .seconds(1),
+                                     leeway: .milliseconds(100))
         }
         // Idle: the 1 Hz keep-alive that stops macOS terminating the link.
         if now - lastWriteAt >= 1.0, pendingCommand == nil {
@@ -617,7 +642,9 @@ final class ControllerSession: NSObject, @unchecked Sendable {
     }
 
     private func writeMotor(_ vib: Switch2.Vibration) {
-        guard let motor = chars[Switch2.GATT.vibration(for: model)] else { return }
+        let motor = vibrationChar ?? chars[Switch2.GATT.vibration(for: model)]
+        if vibrationChar == nil { vibrationChar = motor }
+        guard let motor else { return }
         let packet = Switch2.motorPacket(vib, packetID: vibrationPacketID, model: model)
         vibrationPacketID &+= 1
         peripheral.writeValue(packet, for: motor, type: .withoutResponse)
@@ -685,9 +712,18 @@ final class ControllerSession: NSObject, @unchecked Sendable {
         state = s
         onState?(slot, s)
 
-        // Battery / rate refresh for the UI at ~1 Hz.
+        // Battery / rate refresh for the UI only when battery % or presence changes.
         if reportCount % 33 == 0 {
-            delegate?.sessionDidUpdateState(self)
+            let mv = s.batteryMillivolts
+            let hasMV = mv > 0
+            let pct: Int = hasMV
+                ? min(100, max(0, Int((Double(mv) - 3300) / (4150 - 3300) * 100)))
+                : 0
+            if pct != lastPublishedBatteryPct || hasMV != lastPublishedHasMV {
+                lastPublishedBatteryPct = pct
+                lastPublishedHasMV = hasMV
+                delegate?.sessionDidUpdateState(self)
+            }
         }
     }
 
@@ -714,36 +750,43 @@ extension ControllerSession: CBPeripheralDelegate {
         for ch in service.characteristics ?? [] {
             if let uuid = UUID(uuidString: ch.uuid.uuidString) {
                 chars[uuid] = ch
+                switch uuid {
+                case Switch2.GATT.inputReport: inputReportChar = ch
+                case Switch2.GATT.commandWrite: commandWriteChar = ch
+                case Switch2.GATT.commandResponse: commandResponseChar = ch
+                case Self.audioInputUUID: audioInputChar = ch
+                case Self.audioOutputUUID: audioOutputChar = ch
+                default: break
+                }
             }
         }
         // All three essentials present → subscribe to command responses and
         // start the handshake (services report in arbitrary order).
-        if chars[Switch2.GATT.commandWrite] != nil,
-           chars[Switch2.GATT.commandResponse] != nil,
-           chars[Switch2.GATT.inputReport] != nil,
+        if commandWriteChar != nil,
+           let cmdResp = commandResponseChar,
+           inputReportChar != nil,
            !handshakeStarted {
             handshakeStarted = true
-            peripheral.setNotifyValue(true, for: chars[Switch2.GATT.commandResponse]!)
+            peripheral.setNotifyValue(true, for: cmdResp)
         }
     }
 
     func peripheral(_ peripheral: CBPeripheral,
                     didUpdateNotificationStateFor characteristic: CBCharacteristic,
                     error: Error?) {
-        let uuid = UUID(uuidString: characteristic.uuid.uuidString)
         if let error {
             // Only the essential channels are fatal — an experimental
             // (promiscuous) subscribe may legitimately be refused.
-            if uuid == Switch2.GATT.commandResponse || uuid == Switch2.GATT.inputReport {
+            if characteristic === commandResponseChar || characteristic === inputReportChar {
                 fail("notify state: \(error.localizedDescription)")
             } else {
                 log(.debug, "notify refused on \(characteristic.uuid.uuidString): \(error.localizedDescription)")
             }
             return
         }
-        if uuid == Switch2.GATT.commandResponse {
+        if characteristic === commandResponseChar {
             runHandshake()
-        } else if uuid == Switch2.GATT.inputReport {
+        } else if characteristic === inputReportChar {
             notifyCompletion?(true)
             notifyCompletion = nil
         }
@@ -762,12 +805,11 @@ extension ControllerSession: CBPeripheralDelegate {
                     didUpdateValueFor characteristic: CBCharacteristic,
                     error: Error?) {
         guard error == nil, let data = characteristic.value else { return }
-        let uuid = UUID(uuidString: characteristic.uuid.uuidString)
-        if uuid == Switch2.GATT.inputReport {
+        if characteristic === inputReportChar {
             handleInputReport(data)
-        } else if uuid == Switch2.GATT.commandResponse {
+        } else if characteristic === commandResponseChar {
             handleCommandResponse(data)
-        } else if uuid == Self.audioInputUUID {
+        } else if characteristic === audioInputChar {
             onAudioPacket?(data)
         } else if promiscuousNotify {
             // Experiment channel: surface out-of-band data loudly.

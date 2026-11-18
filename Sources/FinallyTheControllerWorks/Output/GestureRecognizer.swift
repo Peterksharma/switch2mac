@@ -12,9 +12,10 @@
 import Foundation
 import CoreGraphics
 import AppKit
+import os
 
 /// A stored gesture: normalized template + the action it triggers.
-struct AirGesture: Codable, Identifiable {
+struct AirGesture: Codable, Identifiable, Sendable {
     var id = UUID()
     var name: String
     var template: [Double]        // 3*N normalized samples
@@ -36,27 +37,54 @@ final class GestureRecognizer: @unchecked Sendable {
     static let sampleCount = 24
     static let matchThreshold = 0.55
 
-    /// Which button, held, bookends a gesture (default GL).
-    private var triggerName: String {
-        UserDefaults.standard.string(forKey: "gestureTriggerButton") ?? "GL"
+    private struct SharedConfig {
+        var triggerButton: Switch2.Buttons = .gl
+        var gestures: [AirGesture] = []
+        var recordingName: String?
+        var onRecorded: ((AirGesture) -> Void)?
     }
 
-    private var gestures: [AirGesture] = []
-    private var capturing: [Int: [SIMD3<Double>]] = [:]   // per player, while held
-    private var wasHeld: [Int: Bool] = [:]
+    private let configLock = OSAllocatedUnfairLock<SharedConfig>(initialState: SharedConfig())
+    private var capturing: [Int: [SIMD3<Double>]] = [:]   // btQueue-confined
+    private var wasHeld: [Int: Bool] = [:]                // btQueue-confined
 
     /// When set, the next captured path is saved as a template with this
     /// name (via onRecorded) rather than matched.
-    var recordingName: String?
-    var onRecorded: ((AirGesture) -> Void)?
+    var recordingName: String? {
+        get { configLock.withLock { $0.recordingName } }
+        set { configLock.withLock { $0.recordingName = newValue } }
+    }
+    var onRecorded: ((AirGesture) -> Void)? {
+        get { configLock.withLock { $0.onRecorded } }
+        set { configLock.withLock { $0.onRecorded = newValue } }
+    }
 
-    init() { reload() }
+    init() {
+        reload()
+        refreshTrigger()
+        NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: UserDefaults.standard, queue: nil) { [weak self] _ in
+            self?.refreshTrigger()
+        }
+    }
+
+    private func refreshTrigger() {
+        let name = UserDefaults.standard.string(forKey: "gestureTriggerButton") ?? "GL"
+        if let btn = Switch2.button(named: name) {
+            configLock.withLock { $0.triggerButton = btn }
+        }
+    }
 
     func reload() {
-        guard let data = UserDefaults.standard.data(forKey: "airGestures"),
-              let list = try? JSONDecoder().decode([AirGesture].self, from: data)
-        else { gestures = []; return }
-        gestures = list
+        let list: [AirGesture]
+        if let data = UserDefaults.standard.data(forKey: "airGestures"),
+           let decoded = try? JSONDecoder().decode([AirGesture].self, from: data) {
+            list = decoded
+        } else {
+            list = []
+        }
+        configLock.withLock { $0.gestures = list }
     }
 
     static func save(_ gestures: [AirGesture]) {
@@ -68,7 +96,16 @@ final class GestureRecognizer: @unchecked Sendable {
     /// Feed one player's report. Buffers gyro while the trigger is held;
     /// on release, records or matches.
     func process(player: Int, buttons: Switch2.Buttons, gyro: (Int16, Int16, Int16)) {
-        guard let trigger = Switch2.button(named: triggerName) else { return }
+        let (trigger, isIdle) = configLock.withLock {
+            ($0.triggerButton, $0.gestures.isEmpty && $0.recordingName == nil)
+        }
+        if isIdle {
+            if !capturing.isEmpty || !wasHeld.isEmpty {
+                capturing.removeAll(keepingCapacity: true)
+                wasHeld.removeAll(keepingCapacity: true)
+            }
+            return
+        }
         let held = buttons.contains(trigger)
         let was = wasHeld[player] ?? false
         wasHeld[player] = held
@@ -90,10 +127,17 @@ final class GestureRecognizer: @unchecked Sendable {
         guard path.count >= 8 else { return }   // too short to be a gesture
         let template = Self.normalize(Self.resample(path, to: Self.sampleCount))
 
-        if let name = recordingName {
-            recordingName = nil
+        let (recName, recCallback, gestures) = configLock.withLock { cfg -> (String?, ((AirGesture) -> Void)?, [AirGesture]) in
+            if let name = cfg.recordingName {
+                cfg.recordingName = nil
+                return (name, cfg.onRecorded, [])
+            }
+            return (nil, nil, cfg.gestures)
+        }
+
+        if let name = recName {
             let gesture = AirGesture(name: name, template: template)
-            onRecorded?(gesture)
+            recCallback?(gesture)
             return
         }
         // Match against saved gestures.

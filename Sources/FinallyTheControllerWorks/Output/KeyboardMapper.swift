@@ -12,9 +12,10 @@
 import Foundation
 import CoreGraphics
 import AppKit
+import os
 
 /// A bound key: virtual keycode + modifier flags + a human label.
-struct KeySpec: Codable, Equatable {
+struct KeySpec: Codable, Equatable, Sendable {
     var keyCode: UInt16
     var modifiers: UInt64      // CGEventFlags rawValue
     var label: String
@@ -36,80 +37,63 @@ struct KeySpec: Codable, Equatable {
 final class KeyboardMapper: @unchecked Sendable {
 
     /// Frontmost app bundle id, refreshed by a workspace observer.
-    private var frontApp: String = ""
+    private let frontAppLock = OSAllocatedUnfairLock<String>(initialState: "")
     private var lastButtons: [Int: Switch2.Buttons] = [:]    // per player
     private var permissionOK = false
     private var permissionChecked = false
     private var lastPreflightAt: CFAbsoluteTime = 0
 
     init() {
-        frontApp = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
+        let initial = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
+        frontAppLock.withLock { $0 = initial }
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil, queue: .main) { [weak self] note in
             let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-            self?.frontApp = app?.bundleIdentifier ?? ""
+            let bundleID = app?.bundleIdentifier ?? ""
+            self?.frontAppLock.withLock { $0 = bundleID }
         }
-    }
-
-    /// The set of buttons currently mapped to keys for this controller in the
-    /// active app — these are suppressed from the gamepad output.
-    func mappedButtons(serial: String) -> Switch2.Buttons {
-        let map = Self.activeMap(serial: serial, app: frontApp)
-        var mask: Switch2.Buttons = []
-        for name in map.keys {
-            if let b = Switch2.button(named: name) { mask.insert(b) }
-        }
-        return mask
     }
 
     /// Process one player's button state; post key events on edges.
-    /// Returns true if this controller has ANY key mapping active (so the
-    /// engine knows to suppress mapped buttons).
-    @discardableResult
-    func process(player: Int, serial: String, buttons: Switch2.Buttons) -> Bool {
-        let map = Self.activeMap(serial: serial, app: frontApp)
-        guard !map.isEmpty else {
+    /// Returns the set of mapped buttons to suppress from gamepad output.
+    func process(player: Int, serial: String, buttons: Switch2.Buttons) -> Switch2.Buttons {
+        let app = frontAppLock.withLock { $0 }
+        let map = Self.activeMap(serial: serial, app: app)
+        guard !map.entries.isEmpty else {
             lastButtons[player] = buttons
-            return false
+            return []
         }
         // No Accessibility permission → no keystrokes can be posted. Return
-        // false so the engine does NOT suppress the mapped buttons: they
+        // empty so the engine does NOT suppress the mapped buttons: they
         // degrade to ordinary gamepad presses instead of going dead.
         guard ensurePermission() else {
             lastButtons[player] = buttons
-            return false
+            return []
         }
 
         let prev = lastButtons[player] ?? []
-        for (name, spec) in map {
-            guard let b = Switch2.button(named: name) else { continue }
+        for (b, spec) in map.entries {
             let now = buttons.contains(b), was = prev.contains(b)
             if now && !was { postKey(spec, down: true) }
             else if !now && was { postKey(spec, down: false) }
         }
         lastButtons[player] = buttons
-        return true
+        return map.mask
     }
 
     // MARK: - Mapping lookup
 
     /// The effective button→key map for a controller in an app: the app
-    /// override if present, else the global ("") map.
-    private static func activeMap(serial: String, app: String) -> [String: KeySpec] {
-        let store = UserDefaults.standard.dictionary(forKey: "controllerSettings")
-        guard let entry = store?[serial] as? [String: Any] else { return [:] }
-        func parse(_ raw: Any?) -> [String: KeySpec] {
-            guard let dict = raw as? [String: [String: Any]] else { return [:] }
-            var out: [String: KeySpec] = [:]
-            for (k, v) in dict { if let s = KeySpec(dictionary: v) { out[k] = s } }
-            return out
+    /// override if present, else the global map.
+    private static func activeMap(serial: String, app: String) -> ControllerConfigSnapshot.KeyMap {
+        guard let config = ControllerSettings.configSnapshot(forSerial: serial) else {
+            return ControllerConfigSnapshot.KeyMap()
         }
-        let byApp = entry["keyMapByApp"] as? [String: [String: [String: Any]]]
-        if !app.isEmpty, let appMap = byApp?[app], !appMap.isEmpty {
-            return parse(appMap)
+        if !app.isEmpty, let appMap = config.appKeyMaps[app], !appMap.entries.isEmpty {
+            return appMap
         }
-        return parse(entry["keyMap"])
+        return config.globalKeyMap
     }
 
     // MARK: - Event posting

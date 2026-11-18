@@ -114,7 +114,8 @@ struct DashboardView: View {
         ControllerCard(
             status: controller,
             pairing: pairingInfo(for: controller),
-            live: player >= 0 ? engine.liveStates[player] : nil,
+            liveFeed: engine.liveFeed,
+            currentState: { engine.currentState(player: player) },
             findRSSI: engine.findingSerial == serial ? engine.findRSSI : nil,
             onTestRumble: { engine.testRumble(player: player) },
             onNFCProbe: { engine.nfcProbe(serial: serial) },
@@ -188,7 +189,8 @@ struct ControllerCard: View {
 
     let status: ControllerStatus
     var pairing: Pairing?
-    var live: ControllerState?
+    let liveFeed: LiveStateFeed
+    var currentState: () -> ControllerState? = { nil }
     var findRSSI: Int?
     var onTestRumble: () -> Void = {}
     var onNFCProbe: () -> Void = {}
@@ -205,6 +207,8 @@ struct ControllerCard: View {
 
     @ObservedObject private var settings = ControllerSettings.shared
     @State private var expanded = false
+    @State private var showInputTest = false
+    @State private var showSensors = false
     @State private var editingName = false
     @State private var nameDraft = ""
     @State private var confirmForget = false
@@ -396,17 +400,19 @@ struct ControllerCard: View {
                             KeyboardMappingView(serial: status.serial)
                         }
                     }
-                    DisclosureGroup("Input test") {
-                        VStack(spacing: 10) {
-                            InputVisualizer(state: live, layout: vizLayout)
-                            Divider()
-                            MotionVisualizer(state: live, serial: status.serial)
+                    DisclosureGroup("Input test", isExpanded: $showInputTest) {
+                        if showInputTest {
+                            LiveInputTestPanel(liveFeed: liveFeed, player: status.player,
+                                               serial: status.serial, layout: vizLayout)
+                                .padding(.top, 6)
                         }
-                        .padding(.top, 6)
                     }
-                    DisclosureGroup("Sensors & battery") {
-                        SensorDashboard(state: live, serial: status.serial)
-                            .padding(.top, 6)
+                    DisclosureGroup("Sensors & battery", isExpanded: $showSensors) {
+                        if showSensors {
+                            LiveSensorPanel(liveFeed: liveFeed, player: status.player,
+                                            serial: status.serial)
+                                .padding(.top, 6)
+                        }
                     }
                     DisclosureGroup("Lights & buttons") {
                         VStack(alignment: .leading, spacing: 10) {
@@ -704,7 +710,7 @@ struct ControllerCard: View {
     /// stored center offset (live values are already offset-adjusted, so
     /// the new offset is old + current).
     private func recenterSticks() {
-        guard let live else { return }
+        guard let live = currentState() else { return }
         let old = settings.stickCenterOffset(forSerial: status.serial)
         settings.setStickCenterOffset(
             l: (old.l.0 + live.leftStick.x, old.l.1 + live.leftStick.y),
@@ -730,6 +736,37 @@ struct ControllerCard: View {
         case 65..<90: return "battery.75percent"
         default: return "battery.100percent"
         }
+    }
+}
+
+private struct LiveInputTestPanel: View {
+    @ObservedObject var liveFeed: LiveStateFeed
+    let player: Int
+    let serial: String
+    let layout: VizLayout
+
+    var body: some View {
+        let state = player >= 0 ? liveFeed.states[player] : nil
+        VStack(spacing: 10) {
+            InputVisualizer(state: state, layout: layout)
+            Divider()
+            MotionVisualizer(state: state, serial: serial)
+        }
+        .onAppear { liveFeed.beginObserving() }
+        .onDisappear { liveFeed.endObserving() }
+    }
+}
+
+private struct LiveSensorPanel: View {
+    @ObservedObject var liveFeed: LiveStateFeed
+    let player: Int
+    let serial: String
+
+    var body: some View {
+        let state = player >= 0 ? liveFeed.states[player] : nil
+        SensorDashboard(state: state, serial: serial)
+            .onAppear { liveFeed.beginObserving() }
+            .onDisappear { liveFeed.endObserving() }
     }
 }
 

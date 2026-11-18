@@ -15,6 +15,50 @@
 
 import Foundation
 import CoreBluetooth
+import os
+
+/// Isolated observable feed for the Dashboard's Input Test and Sensor panels.
+/// Kept separate from BridgeEngine so 10 Hz visualizer updates never invalidate
+/// MenuBarIcon or collapsed Dashboard cards, and zero main-thread dispatches
+/// happen when no live panel is visible.
+@MainActor
+final class LiveStateFeed: ObservableObject {
+    @Published private(set) var states: [Int: ControllerState] = [:]
+
+    private var observerCount = 0
+    private let activeLock = OSAllocatedUnfairLock<Bool>(initialState: false)
+
+    nonisolated init() {}
+
+    nonisolated var hasObservers: Bool {
+        activeLock.withLock { $0 }
+    }
+
+    func beginObserving() {
+        observerCount += 1
+        if observerCount == 1 {
+            activeLock.withLock { $0 = true }
+        }
+    }
+
+    func endObserving() {
+        observerCount = max(0, observerCount - 1)
+        if observerCount == 0 {
+            activeLock.withLock { $0 = false }
+        }
+    }
+
+    func update(player: Int, state: ControllerState) {
+        guard observerCount > 0 else { return }
+        states[player] = state
+    }
+
+    func prune(activePlayers: Set<Int>) {
+        for key in states.keys where !activePlayers.contains(key) {
+            states.removeValue(forKey: key)
+        }
+    }
+}
 
 /// UI-facing snapshot of one logical controller (single or Joy-Con pair).
 struct ControllerStatus: Identifiable, Sendable {
@@ -53,9 +97,10 @@ final class BridgeEngine: NSObject, ObservableObject, @unchecked Sendable {
     // Main-thread state, for SwiftUI only.
     @Published private(set) var engineState: EngineState = .off
     @Published private(set) var controllers: [ControllerStatus] = []
-    /// Throttled (~10 Hz) live input per player, for the input visualizer.
-    @Published private(set) var liveStates: [Int: ControllerState] = [:]
+    /// Throttled (~10 Hz) live input per player, observed only by expanded visualizer panels.
+    let liveFeed = LiveStateFeed()
     private var lastVizPush: [Int: TimeInterval] = [:]   // btQueue
+    private var latestStates: [Int: ControllerState] = [:] // btQueue
 
     private var central: CBCentralManager!
     private let btQueue = DispatchQueue(label: "com.petersharma.ftcw.bluetooth")
@@ -79,6 +124,7 @@ final class BridgeEngine: NSObject, ObservableObject, @unchecked Sendable {
     }
     /// Current logical assignment: player index (0..maxPlayers-1) → logical.
     private var players: [Int: Logical] = [:]
+    private var slotToPlayer: [Int: Int] = [:]
     /// Remembered player numbers per logical id (stable across reshuffles).
     private var playerMemory: [String: Int] = [:]
 
@@ -124,8 +170,7 @@ final class BridgeEngine: NSObject, ObservableObject, @unchecked Sendable {
 
     /// btQueue. The user-facing name for a logical player, honoring renames.
     private func displayName(for logical: Logical) -> String {
-        let store = UserDefaults.standard.dictionary(forKey: "controllerSettings")
-        if let custom = (store?[logical.id] as? [String: Any])?["name"] as? String,
+        if let custom = ControllerSettings.configSnapshot(forSerial: logical.id)?.name,
            !custom.isEmpty {
             return custom
         }
@@ -154,11 +199,9 @@ final class BridgeEngine: NSObject, ObservableObject, @unchecked Sendable {
 
     // MARK: - Rumble
 
-    /// Per-controller rumble scale, read straight from UserDefaults (which is
-    /// thread-safe) so the Bluetooth queue never touches UI-observed objects.
+    /// Per-controller rumble scale from the thread-safe settings snapshot.
     private static func rumbleIntensity(forSerial serial: String) -> Double {
-        let store = UserDefaults.standard.dictionary(forKey: "controllerSettings")
-        return (store?[serial] as? [String: Any])?["rumble"] as? Double ?? 1.0
+        ControllerSettings.configSnapshot(forSerial: serial)?.rumble ?? 1.0
     }
 
     func setRumble(player: Int, strong: Double, weak weakMag: Double) {
@@ -1027,6 +1070,20 @@ final class BridgeEngine: NSObject, ObservableObject, @unchecked Sendable {
             }
         }
         players = newPlayers
+        slotToPlayer.removeAll(keepingCapacity: true)
+        for (player, logical) in players {
+            for slot in logical.slots { slotToPlayer[slot] = player }
+        }
+        let activePlayers = Set(players.keys)
+        for key in latestStates.keys where !activePlayers.contains(key) {
+            latestStates.removeValue(forKey: key)
+            lastVizPush.removeValue(forKey: key)
+            lastButtonsByPlayer.removeValue(forKey: key)
+            captureLast.removeValue(forKey: key)
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.liveFeed.prune(activePlayers: activePlayers)
+        }
         pushNames()
 
         // 4. LEDs follow logical player numbers.
@@ -1049,8 +1106,7 @@ final class BridgeEngine: NSObject, ObservableObject, @unchecked Sendable {
     private var captureLast: [Int: Switch2.Buttons] = [:]
 
     private static func captureScreenshotEnabled(serial: String) -> Bool {
-        let store = UserDefaults.standard.dictionary(forKey: "controllerSettings")
-        return (store?[serial] as? [String: Any])?["captureScreenshot"] as? Bool ?? false
+        ControllerSettings.configSnapshot(forSerial: serial)?.captureScreenshot ?? false
     }
 
     private static func takeScreenshot() {
@@ -1195,6 +1251,14 @@ final class BridgeEngine: NSObject, ObservableObject, @unchecked Sendable {
         return result.map { (id: $0.0, name: $0.1) }
     }
 
+    /// Latest shaped state for a logical player (used on-demand by stick recentering).
+    func currentState(player: Int) -> ControllerState? {
+        guard player >= 0 else { return nil }
+        var result: ControllerState?
+        btQueue.sync { result = latestStates[player] }
+        return result
+    }
+
     /// Route one physical unit's report to its logical player.
     private func emitState(slot: Int, state: ControllerState) {
         // Mouse mode operates on PHYSICAL units (a linked pair's right
@@ -1203,7 +1267,7 @@ final class BridgeEngine: NSObject, ObservableObject, @unchecked Sendable {
             mouseController.handle(serial: session.serialNumber,
                                    model: session.model, state: state)
         }
-        guard let (player, logical) = players.first(where: { $0.value.slots.contains(slot) })
+        guard let player = slotToPlayer[slot], let logical = players[player]
         else { return }
         var out = state
         if logical.isPair,
@@ -1215,8 +1279,9 @@ final class BridgeEngine: NSObject, ObservableObject, @unchecked Sendable {
 
         // Keyboard mapping: post keystrokes and suppress mapped buttons from
         // the gamepad output so they don't double-act.
-        if keyboardMapper.process(player: player, serial: logical.id, buttons: out.buttons) {
-            out.buttons.subtract(keyboardMapper.mappedButtons(serial: logical.id))
+        let suppressed = keyboardMapper.process(player: player, serial: logical.id, buttons: out.buttons)
+        if !suppressed.isEmpty {
+            out.buttons.subtract(suppressed)
         }
 
         for sink in sinks { sink.controllerState(slot: player, state: out) }
@@ -1248,60 +1313,61 @@ final class BridgeEngine: NSObject, ObservableObject, @unchecked Sendable {
         }
         captureLast[player] = out.buttons
 
-        // Feed the dashboard visualizer at ~10 Hz.
-        let now = CFAbsoluteTimeGetCurrent()
-        if now - (lastVizPush[player] ?? 0) >= 0.1 {
-            lastVizPush[player] = now
-            let snapshot = out
-            DispatchQueue.main.async { [weak self] in
-                self?.liveStates[player] = snapshot
+        latestStates[player] = out
+
+        // Feed the dashboard visualizer at ~10 Hz ONLY while a live panel is visible.
+        if liveFeed.hasObservers {
+            let now = CFAbsoluteTimeGetCurrent()
+            if now - (lastVizPush[player] ?? 0) >= 0.1 {
+                lastVizPush[player] = now
+                let snapshot = out
+                DispatchQueue.main.async { [weak self] in
+                    self?.liveFeed.update(player: player, state: snapshot)
+                }
             }
         }
     }
 
-    /// Per-controller axis shaping (UserDefaults is thread-safe):
+    /// Per-controller axis shaping from cached settings snapshot:
     /// radial deadzone with rescaling (preserves direction, keeps full
     /// range reachable) and optional Y inversions.
     private static func applyAxisOptions(_ state: ControllerState,
                                          serial: String,
                                          analogTriggers: Bool = false) -> ControllerState {
-        let store = UserDefaults.standard.dictionary(forKey: "controllerSettings")
-        guard let entry = store?[serial] as? [String: Any] else { return state }
+        guard let config = ControllerSettings.configSnapshot(forSerial: serial) else {
+            return state
+        }
         var s = state
-        let dz = entry["deadzone"] as? Double ?? 0.0
-        if dz > 0 {
-            s.leftStick = Self.radialDeadzone(s.leftStick, dz)
-            s.rightStick = Self.radialDeadzone(s.rightStick, dz)
+        if config.deadzone > 0 {
+            s.leftStick = Self.radialDeadzone(s.leftStick, config.deadzone)
+            s.rightStick = Self.radialDeadzone(s.rightStick, config.deadzone)
         }
         // Stick center offset (drift correction): shift then re-clamp.
-        if let cl = entry["stickCenterL"] as? [Double], cl.count == 2 {
-            s.leftStick.x = max(-1, min(1, s.leftStick.x - cl[0]))
-            s.leftStick.y = max(-1, min(1, s.leftStick.y - cl[1]))
+        if let cl = config.stickCenterL {
+            s.leftStick.x = max(-1, min(1, s.leftStick.x - cl.0))
+            s.leftStick.y = max(-1, min(1, s.leftStick.y - cl.1))
         }
-        if let cr = entry["stickCenterR"] as? [Double], cr.count == 2 {
-            s.rightStick.x = max(-1, min(1, s.rightStick.x - cr[0]))
-            s.rightStick.y = max(-1, min(1, s.rightStick.y - cr[1]))
+        if let cr = config.stickCenterR {
+            s.rightStick.x = max(-1, min(1, s.rightStick.x - cr.0))
+            s.rightStick.y = max(-1, min(1, s.rightStick.y - cr.1))
         }
         // Trigger threshold: ZL/ZR only assert past the configured travel.
-        if let thr = entry["triggerThreshold"] as? Double, thr > 0 {
-            let cut = UInt8(min(255, thr * 255))
+        if config.triggerThreshold > 0 {
+            let cut = UInt8(min(255, config.triggerThreshold * 255))
             if s.leftTrigger < cut { s.leftTrigger = 0 }
             if s.rightTrigger < cut { s.rightTrigger = 0 }
         }
-        if entry["invertLX"] as? Bool ?? false { s.leftStick.x = -s.leftStick.x }
-        if entry["invertLY"] as? Bool ?? false { s.leftStick.y = -s.leftStick.y }
-        if entry["invertRX"] as? Bool ?? false { s.rightStick.x = -s.rightStick.x }
-        if entry["invertRY"] as? Bool ?? false { s.rightStick.y = -s.rightStick.y }
-        if let map = entry["buttonMap"] as? [String: String], !map.isEmpty {
+        if config.invertLX { s.leftStick.x = -s.leftStick.x }
+        if config.invertLY { s.leftStick.y = -s.leftStick.y }
+        if config.invertRX { s.rightStick.x = -s.rightStick.x }
+        if config.invertRY { s.rightStick.y = -s.rightStick.y }
+        if !config.buttonRemap.isEmpty {
             // Full remap: each pressed physical control asserts its mapped
             // output (identity when unmapped). Multiple physical buttons may
             // legitimately map to one output (union semantics).
             var out: Switch2.Buttons = []
-            for (name, button) in Switch2.namedButtons where s.buttons.contains(button) {
-                let targetName = map[name] ?? name
-                if let target = Switch2.button(named: targetName) {
-                    out.insert(target)
-                }
+            for pair in config.buttonRemap where s.buttons.contains(pair.from) {
+                out.insert(pair.to)
             }
             s.buttons = out
             // Digital triggers follow the POST-remap ZL/ZR bits (the GC
